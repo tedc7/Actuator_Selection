@@ -1,0 +1,44 @@
+{
+  "name": "RobStride 00",
+  "vendor": "RobStride Dynamics",
+  "url": "https://www.robstride.com/products/robStride00",
+  "price_usd": 125,
+
+  "_comment_source": "Electrical/mechanical figures from the published RobStride 00 datasheet table. Phase resistance, inductance and all thermal parameters are NOT published and are estimated by the tool - see the ASSUMED PARAMETERS section of any report.",
+
+  "mass":       {"value": 0.310, "units": "kg",  "source": "vendor", "tol": 0.03},
+  "dims_mm":    [57, 57, 51],
+  "gear_ratio": {"value": 10.0,  "units": "-",   "source": "vendor", "tol": 0.0},
+  "gear_type":  "planetary_1stage",
+  "gear_eff":   {"value": 0.94,  "units": "-",   "source": "derived", "tol": 0.05,
+                 "note": "back-solved from vendor Kt_out=1.48 Nm/Arms against Ke=9.5 Vrms/kRPM"},
+  "pole_pairs": 14,
+
+  "Ke_Vrms_per_kRPM": {"value": 9.5, "source": "vendor", "tol": 0.10,
+                       "note": "datasheet back-EMF, line-to-line RMS per 1000 rotor rpm"},
+
+  "I_cont_peak_amp": {"value": 4.7,  "units": "A_pk", "source": "vendor", "tol": 0.10,
+                      "note": "datasheet 'rated load phase current (peak)'"},
+  "I_peak_peak_amp": {"value": 15.5, "units": "A_pk", "source": "vendor", "tol": 0.10,
+                      "note": "datasheet 'max load phase current (peak)'"},
+
+  "kt_sat_derate": {"value": 0.863, "units": "-", "source": "derived", "tol": 0.08,
+                    "note": "14 Nm actual peak vs 16.2 Nm linear extrapolation of Kt"},
+
+  "V_bus_nom": {"value": 48.0, "units": "V", "source": "vendor", "tol": 0.0},
+  "V_bus_min": {"value": 24.0, "units": "V", "source": "vendor", "tol": 0.0},
+  "V_bus_max": {"value": 60.0, "units": "V", "source": "vendor", "tol": 0.0},
+
+  "tau_cont_out_spec": {"value": 5.0,  "units": "N.m", "source": "vendor", "tol": 0.10,
+                        "note": "vendor 'rated load'; ambient and mounting unspecified"},
+  "tau_peak_out_spec": {"value": 14.0, "units": "N.m", "source": "vendor", "tol": 0.10},
+
+  "T_winding_max": {"value": 120.0, "units": "degC", "source": "estimated", "tol": 0.12,
+                    "note": "Class B insulation (130 degC) less 10 degC design margin"},
+
+  "notes": [
+    "Vendor rated torque of 5 N.m is quoted with no stated ambient temperature or mounting condition, so it cannot be taken as a continuous rating in an enclosed robot arm. This tool computes the continuous limit from the thermal model instead.",
+    "Dual 14-bit magnetic encoders, 1 Mbps CAN, FOC drive integrated.",
+    "Operating ambient range -20 to 50 degC per datasheet."
+  ]
+}
