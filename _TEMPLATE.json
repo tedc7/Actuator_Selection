@@ -1,0 +1,80 @@
+{
+  "_README": [
+    "Copy this file to add a new actuator. Delete any field you do not have a",
+    "real number for -- the tool will estimate it and flag it in the report.",
+    "Do NOT invent values just to fill the file in; an honest gap is far more",
+    "useful than a plausible-looking fabrication, because the sensitivity",
+    "analysis can only warn you about gaps it knows about.",
+    "",
+    "Every field accepts either a bare number or an object with provenance:",
+    "  \"source\": measured | vendor | derived | estimated | guess",
+    "  \"tol\":    relative uncertainty, e.g. 0.10 for +/-10%",
+    "  \"units\":  ALWAYS state these. A unit from the wrong dimension is a hard",
+    "            error; a missing one is assumed canonical SI and flagged in the",
+    "            report's UNIT AUDIT. Set \"strict_units\": true to reject bare",
+    "            numbers outright. You may also put the unit in the field name,",
+    "            e.g. \"mass_g\": 310 or \"tau_peak_out_spec_lbf.ft\": 10.3.",
+    "MINIMUM VIABLE ENTRY: mass, dims_mm, gear_ratio, one of Ke/Kt, and the",
+    "two current ratings. Everything else has a defensible default."
+  ],
+
+  "name": "Vendor Model 123",
+  "vendor": "",
+  "url": "",
+  "price_usd": 0,
+
+  "mass":       {"value": 0.0, "units": "kg", "source": "vendor"},
+  "dims_mm":    [0, 0, 0],
+  "gear_ratio": {"value": 1.0, "units": "-", "source": "vendor"},
+  "gear_type":  "planetary_1stage    // direct|planetary_1stage|planetary_2stage|cycloidal|harmonic|belt|worm",
+  "gear_eff":   {"value": 0.94, "units": "-", "source": "estimated"},
+  "pole_pairs": 14,
+
+  "_torque_constant_pick_ONE": "Ke_Vrms_per_kRPM (preferred), or Ke, or Kt_rotor, or Kt_out_per_Arms",
+  "Ke_Vrms_per_kRPM": {"value": 0.0, "source": "vendor",
+                       "note": "line-to-line RMS volts per 1000 ROTOR rpm"},
+  "Ke":              {"value": 0.0, "units": "V_rms_LL/(rad/s)", "source": "vendor"},
+  "Kt_rotor":        {"value": 0.0, "units": "N.m/A_rms", "source": "vendor"},
+  "Kt_out_per_Arms": {"value": 0.0, "units": "N.m/A_rms", "source": "vendor",
+                      "note": "if the datasheet quotes Kt after the gearbox"},
+
+  "_currents_pick_rms_OR_peak_amplitude": "",
+  "I_cont_rms":      {"value": 0.0, "units": "A_rms", "source": "vendor"},
+  "I_peak_rms":      {"value": 0.0, "units": "A_rms", "source": "vendor"},
+  "I_cont_peak_amp": {"value": 0.0, "units": "A_pk",  "source": "vendor"},
+  "I_peak_peak_amp": {"value": 0.0, "units": "A_pk",  "source": "vendor"},
+
+  "R_phase": {"value": 0.0, "units": "ohm", "source": "measured",
+              "note": "LINE-TO-NEUTRAL at 25 degC. A line-to-line datasheet value is 2x this. THE single highest-value measurement you can make."},
+  "L_phase": {"value": 0.0, "units": "H", "source": "vendor"},
+
+  "kt_sat_derate": {"value": 0.88, "units": "-", "source": "estimated",
+                    "note": "Kt at peak current / Kt at low current"},
+
+  "_bus_note": "These describe what the ACTUATOR accepts. The voltage your robot actually supplies belongs in the joint/application file as bus_voltage.",
+  "V_bus_nom": {"value": 48.0, "units": "V", "source": "vendor"},
+  "V_bus_min": {"value": 24.0, "units": "V", "source": "vendor"},
+  "V_bus_max": {"value": 60.0, "units": "V", "source": "vendor"},
+
+  "tau_cont_out_spec": {"value": 0.0, "units": "N.m", "source": "vendor"},
+  "tau_peak_out_spec": {"value": 0.0, "units": "N.m", "source": "vendor"},
+
+  "J_rotor": {"value": 0.0, "units": "kg.m^2", "source": "vendor",
+              "note": "ROTOR side, before the gearbox"},
+
+  "_thermal_the_part_that_usually_decides_it": "",
+  "Rth_wc":        {"value": 0.0, "units": "degC/W", "source": "measured",
+                    "note": "winding to housing"},
+  "Rth_ca":        {"value": 0.0, "units": "degC/W", "source": "measured",
+                    "note": "housing to ambient AS MOUNTED IN YOUR ROBOT, not on a bench"},
+  "C_w":           {"value": 0.0, "units": "J/K", "source": "estimated"},
+  "C_c":           {"value": 0.0, "units": "J/K", "source": "estimated"},
+  "T_winding_max": {"value": 120.0, "units": "degC", "source": "vendor",
+                    "note": "Class A 105, B 130, F 155, H 180; subtract margin"},
+
+  "iron_loss_ref_W":        {"value": 0.0, "units": "W", "source": "estimated"},
+  "friction_torque_rotor":  {"value": 0.0, "units": "N.m", "source": "estimated"},
+  "backlash_arcmin":        {"value": 0.0, "units": "arcmin", "source": "vendor"},
+
+  "notes": ["Free-text caveats about how the vendor measured their numbers."]
+}

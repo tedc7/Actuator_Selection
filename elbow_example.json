@@ -1,0 +1,70 @@
+{
+  "name": "Elbow (example)",
+  "kind": "revolute",
+  "n_actuators": 2,
+
+  "_UNITS": [
+    "Every physical value may be written three ways:",
+    "  1. explicit object   \"com_distance\": {\"value\": 11, \"units\": \"in\"}   <- preferred",
+    "  2. suffixed name     \"com_distance_mm\": 280",
+    "  3. bare number       \"com_distance\": 0.28   -> canonical SI assumed, and",
+    "                        flagged in the report's UNIT AUDIT",
+    "A unit from the wrong dimension (e.g. kg for a length) is always a hard error.",
+    "Set \"strict_units\": true below to reject form 3 outright.",
+    "Canonical units: mass kg, length m, inertia kg.m^2, angle rad, time s,",
+    "torque N.m, angular velocity rad/s, temperature degC."
+  ],
+  "strict_units": false,
+
+  "_comment": "Two actuators share one joint: torque and mass scale by n, and each unit carries 1/n of the load so each one's thermal problem gets easier. Set ratio if there is a belt or linkage between the actuator output and the joint itself.",
+
+  "ratio": {"value": 1.0, "units": "-", "source": "vendor",
+            "note": "actuators mounted coaxially on the joint, no extra reduction"},
+  "ratio_type": "direct",
+
+  "load": {
+    "payload_mass":    {"value": 1.5,  "units": "kg"},
+    "com_distance":    {"value": 280,  "units": "mm"},
+    "link_inertia":    {"value": 350,  "units": "kg.cm^2"},
+    "gravity_factor":  {"value": 1.0,  "units": "-",
+                        "note": "1 = axis horizontal, link swings against full gravity; 0 = vertical axis"},
+    "gravity_phase":   {"value": 0,    "units": "deg"},
+    "external_torque": {"value": 0,    "units": "N.m"},
+    "joint_friction":  {"value": 0.15, "units": "N.m"}
+  },
+
+  "profile": {
+    "stroke":         {"value": 90,   "units": "deg"},
+    "move_time":      {"value": 450,  "units": "ms"},
+    "dwell_time":     {"value": 0.35, "units": "s"},
+    "accel_fraction": {"value": 0.25, "units": "-"},
+    "theta_start":    {"value": -45,  "units": "deg"},
+    "samples": 160
+  },
+
+  "_POWER_SYSTEM": [
+    "Bus voltage is a property of THIS robot, not of the actuator. The vendor's",
+    "rated voltage is only what they characterised the unit at. Set the voltage",
+    "your robot actually supplies here; the actuator file declares the range it",
+    "will accept, and the two are checked against each other.",
+    "Running ABOVE the vendor nominal is routine and simply extends the speed",
+    "envelope. Running above their stated MAXIMUM is limited by transistor and",
+    "DC-link capacitor voltage ratings rather than by heat, so it cannot be",
+    "cleared on thermal grounds; set accept_overvoltage to acknowledge the risk",
+    "and downgrade that check from a failure to a warning.",
+    "supply_current_limit is optional - omit it if the supply can always deliver",
+    "more than the drive's own current rating, which is the usual case."
+  ],
+  "bus_voltage": {"value": 52, "units": "V",
+                  "note": "13S lithium pack, nominal 48.1 V, 54.6 V at full charge"},
+  "accept_overvoltage": false,
+
+  "T_ambient":   {"value": 40,  "units": "degC",
+                  "note": "inside the arm shell, NOT room temperature"},
+  "max_surface_temp": {"value": 48, "units": "degC",
+                       "note": "housing is reachable by the operator. ISO 13732-1 is the relevant standard for touch-temperature limits; the threshold depends on material and contact duration, so set this from your own safety case rather than treating 48 as a default."},
+  "mass_budget": {"value": 800, "units": "g"},
+
+  "mounting": "bolted_metal",
+  "require_backdrivable": true
+}
