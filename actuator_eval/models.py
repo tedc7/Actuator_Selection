@@ -173,6 +173,7 @@ class Actuator:
     viscous_rotor: P = None            # N.m/(rad/s)
 
     notes: List[str] = field(default_factory=list)
+    source_path: Optional[str] = None   # file this was loaded from, if any
 
     # ------------------------------------------------------------------
     def fill_defaults(self, mounting: str = "bolted_metal"):
@@ -423,6 +424,27 @@ class Joint:
     position_tolerance_rad: Optional[float] = None
     require_backdrivable: bool = False
     mounting: str = "bolted_metal"
+
+    source_path: Optional[str] = None   # file this was loaded from, if any
+
+    def output_dir(self) -> str:
+        """
+        Where results for this application belong: beside the file that defined
+        it, so a report never gets separated from its inputs. Falls back to the
+        working directory for a Joint built in code rather than loaded.
+        """
+        import os
+        if self.source_path:
+            return os.path.dirname(os.path.abspath(self.source_path))
+        return os.getcwd()
+
+    def slug(self) -> str:
+        """Filename-safe stem for this application's output files."""
+        import os
+        import re
+        if self.source_path:
+            return os.path.splitext(os.path.basename(self.source_path))[0]
+        return re.sub(r"[^A-Za-z0-9]+", "_", self.name).strip("_").lower() or "joint"
 
     def bus_v(self, act: "Actuator") -> float:
         """

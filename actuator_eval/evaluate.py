@@ -282,7 +282,7 @@ def evaluate(act: Actuator, joint: Joint, run_sensitivity: bool = True) -> Evalu
                   f"resting value, so the transient peak is what the silicon "
                   f"actually sees.")
         if joint.accept_overvoltage:
-            detail += " Downgraded to a warning by accept_overvoltage in the joint file."
+            detail += " Downgraded to a warning by accept_overvoltage in the application file."
     ev.criteria.append(Criterion(
         "Bus voltage", st, v_bus, vmax, "V",
         1.0 if st == PASS else (0.5 if st == MARGINAL else 0.0),

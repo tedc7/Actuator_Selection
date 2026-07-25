@@ -6,7 +6,7 @@ Built around three ideas:
 
 1. **Heat is the real limit**, so the thermal model is the centrepiece rather than an afterthought.
 2. **Missing data must never block an answer.** Every parameter has a documented default and an uncertainty band. The analysis always runs; the report tells you which conclusions actually rested on a guess.
-3. **Joints and actuators are separate, reusable files**, so evaluating a new actuator against five joints is five commands, not five spreadsheets.
+3. **Actuators and applications are separate, reusable files**, so evaluating a new actuator against five joints is five commands, not five spreadsheets.
 
 ---
 
@@ -19,13 +19,16 @@ python3 eval_actuator.py -a robstride_00 -j elbow_example -n 1,2,3     # compare
 python3 eval_actuator.py -a robstride_00 -j elbow_example --ambient 55 --bus 36
 python3 eval_actuator.py -a robstride_00 -j elbow_example --surface-limit 45
 python3 eval_actuator.py -a robstride_00 -j elbow_example --set R_phase=0.42
-python3 eval_actuator.py -a robstride_06 -j elbow_example --charts out.html
+python3 eval_actuator.py -a robstride_06 -j elbow_example --save --charts
 ```
 
-`--charts` writes a self-contained HTML file (no CDN, no JS) with three SVG plots.
-With `-n 1,2,3` it writes one file per configuration (`out_1x.html`, `out_2x.html`, ...).
+`--save` writes the text report and `--charts` writes a self-contained HTML file
+(no CDN, no JS) with three SVG plots. Both land **in the same directory as the
+application file** so results never get separated from their inputs; pass
+`--outdir` to send them elsewhere, or give `--charts` an explicit filename. With
+`-n 1,2,3` you get one chart file per configuration.
 
-No dependencies beyond the Python 3.9+ standard library.
+No dependencies beyond the Python 3.9+ standard library. Tests: `python3 tests/test_smoke.py`.
 
 As a library:
 
@@ -33,11 +36,43 @@ As a library:
 from actuator_eval import db, evaluate, report
 
 act   = db.load_actuator("robstride_00")
-joint = db.load_joint("elbow_example")
+joint = db.load_application("elbow_example")
 ev    = evaluate.evaluate(act, joint)
 print(report.render(ev))
 print(ev.verdict, ev.binding.name)
 ```
+
+---
+
+## Layout
+
+```
+actuator_eval/            the engine, importable as a package
+  db/actuators/           vendor reference data -- public, reusable, PR-able
+    _TEMPLATE.json
+applications/             one file per joint on your robot -- GITIGNORED
+  examples/               ...except these, so a fresh clone can run the above
+    _TEMPLATE.json
+eval_actuator.py          CLI
+```
+
+Two kinds of input file, and the distinction is the whole reason for the split:
+
+- An **actuator** file is vendor data. It is reusable across every robot, worth
+  reviewing, and belongs in git where it gets diffs and pull requests.
+- An **application** file is one joint on *your* machine: payload, geometry, the
+  bus voltage your robot actually supplies, the ambient inside your shell. None
+  of it is reusable and much of it is proprietary, so `applications/` is
+  gitignored and this repo stays publishable.
+
+Putting an application fact in an actuator file makes it silently wrong for every
+other robot that uses that actuator, which is the failure this layout prevents.
+
+To start an application: copy `applications/examples/_TEMPLATE.json` into
+`applications/`. A bare name is looked up in `applications/` first, then
+`applications/examples/`, so a private file shadows an example of the same name;
+an explicit path always wins. Set `ACTUATOR_EVAL_APPS_DIR` to keep applications
+outside the repo entirely (a private repo, a synced drive).
 
 ---
 
@@ -46,7 +81,7 @@ print(ev.verdict, ev.binding.name)
 The split matters, because putting an application fact in the actuator file
 makes it silently wrong for every other robot that uses that actuator.
 
-| Actuator file (vendor property) | Joint file (your application) |
+| Actuator file (vendor property) | Application file (your robot) |
 |---|---|
 | `V_bus_min` / `V_bus_max` — range it will accept | `bus_voltage` — what your robot actually supplies |
 | `V_bus_nom` — what the vendor characterised it at | `supply_current_limit` — optional; omit if not binding |
@@ -107,7 +142,7 @@ Form 3 keeps quick edits quick, but every bare number is listed in the report's
 A unit from the *wrong dimension* is always a hard error, never a warning:
 
 ```
-UnitError: in joint file 'elbow_example.json': unit 'kg' is a mass unit, but
+UnitError: in application file 'elbow_example.json': unit 'kg' is a mass unit, but
 this field expects length. Valid units here: m, mm, cm, in, ft
 ```
 
@@ -170,7 +205,7 @@ Keeping the physics in a library means the UI never becomes the source of truth.
 
 ## Should there be an actuator database?
 
-Yes, and it should be JSON files in git rather than a real database. Sourcing and entering vendor data is the genuinely expensive part of this problem, it is done once per actuator, and it needs review. Files give you diffs, blame, and pull requests. A schema is in `actuator_eval/db/actuators/_TEMPLATE.json`.
+Yes, and it should be JSON files in git rather than a real database. Sourcing and entering vendor data is the genuinely expensive part of this problem, it is done once per actuator, and it needs review. Files give you diffs, blame, and pull requests. A schema is in `actuator_eval/db/actuators/_TEMPLATE.json`, and the matching one for applications is in `applications/examples/_TEMPLATE.json`.
 
 The important rule: **leave out what you do not know.** An omitted field gets a documented estimate and appears in the report's assumption list and sensitivity sweep. A fabricated field looks like data and silently corrupts the verdict.
 

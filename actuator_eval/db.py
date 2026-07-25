@@ -25,8 +25,26 @@ from .models import Actuator, Joint, Load, MotionProfile
 from . import units as U
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(_HERE)
+
+# Actuators are vendor reference data: public, reusable, shipped with the repo.
 ACTUATOR_DIR = os.path.join(_HERE, "db", "actuators")
-JOINT_DIR = os.path.join(_HERE, "db", "joints")
+
+# Applications describe one joint on one robot. They are not reusable reference
+# data -- payload, geometry, bus voltage and internal ambient are facts about
+# YOUR machine -- so they live outside the package and are gitignored. Set
+# ACTUATOR_EVAL_APPS_DIR to keep them somewhere else entirely (another repo, a
+# synced drive); it takes precedence over the default location.
+APPLICATION_DIR = os.environ.get(
+    "ACTUATOR_EVAL_APPS_DIR", os.path.join(_REPO, "applications"))
+
+# The bundled examples are public so a fresh clone can run the quick start.
+EXAMPLE_DIR = os.path.join(APPLICATION_DIR, "examples")
+
+
+def application_search_path() -> List[str]:
+    """Directories searched for an application named without a path."""
+    return [APPLICATION_DIR, EXAMPLE_DIR]
 
 _ACT_PLAIN = ["name", "vendor", "url", "price_usd", "gear_type",
               "pole_pairs", "modulation_k", "notes"]
@@ -124,18 +142,30 @@ def actuator_from_dict(d: Dict) -> Tuple[Actuator, U.UnitAudit]:
     return a, audit
 
 
-def load_actuator(name_or_path: str, with_audit: bool = False):
-    path = name_or_path
+def resolve_actuator_path(name_or_path: str) -> str:
+    """Locate an actuator file by name or explicit path."""
+    if os.path.exists(name_or_path):
+        return os.path.abspath(name_or_path)
+    path = os.path.join(ACTUATOR_DIR, name_or_path)
+    if not path.endswith(".json"):
+        path += ".json"
     if not os.path.exists(path):
-        path = os.path.join(ACTUATOR_DIR, name_or_path)
-        if not path.endswith(".json"):
-            path += ".json"
+        known = ", ".join(list_actuators()) or "none found"
+        raise FileNotFoundError(
+            f"no actuator '{name_or_path}'. Give a path to a json file, or one "
+            f"of the names in the database: {known}")
+    return os.path.abspath(path)
+
+
+def load_actuator(name_or_path: str, with_audit: bool = False):
+    path = resolve_actuator_path(name_or_path)
     with open(path) as f:
         d = json.load(f)
     try:
         a, audit = actuator_from_dict(d)
     except U.UnitError as e:
         raise U.UnitError(f"in actuator file '{path}': {e}") from None
+    a.source_path = path
     return (a, audit) if with_audit else a
 
 
@@ -147,7 +177,7 @@ def list_actuators() -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Joint
+# Application (one joint on one robot)
 # ---------------------------------------------------------------------------
 
 def joint_from_dict(d: Dict) -> Tuple[Joint, U.UnitAudit]:
@@ -214,23 +244,72 @@ def joint_from_dict(d: Dict) -> Tuple[Joint, U.UnitAudit]:
     return j, audit
 
 
-def load_joint(name_or_path: str, with_audit: bool = False):
-    path = name_or_path
-    if not os.path.exists(path):
-        path = os.path.join(JOINT_DIR, name_or_path)
-        if not path.endswith(".json"):
-            path += ".json"
+def resolve_application_path(name_or_path: str) -> str:
+    """
+    Locate an application file by name or explicit path.
+
+    A bare name is searched for in applications/ first, then in the bundled
+    applications/examples/, so a private file always shadows an example of the
+    same name rather than the other way round.
+    """
+    if os.path.exists(name_or_path):
+        return os.path.abspath(name_or_path)
+    fname = name_or_path if name_or_path.endswith(".json") else name_or_path + ".json"
+    for d in application_search_path():
+        cand = os.path.join(d, fname)
+        if os.path.exists(cand):
+            return os.path.abspath(cand)
+    known = ", ".join(n for n, _ in list_applications()) or "none found"
+    raise FileNotFoundError(
+        f"no application '{name_or_path}'. Give a path to a json file, or one "
+        f"of: {known}")
+
+
+def load_application(name_or_path: str, with_audit: bool = False):
+    """
+    Load one joint-on-a-robot definition.
+
+    The resolved path is recorded on the Joint as `source_path` so that reports
+    and charts can be written into the same directory as the file that produced
+    them.
+    """
+    path = resolve_application_path(name_or_path)
     with open(path) as f:
         d = json.load(f)
     try:
         j, audit = joint_from_dict(d)
     except U.UnitError as e:
-        raise U.UnitError(f"in joint file '{path}': {e}") from None
+        raise U.UnitError(f"in application file '{path}': {e}") from None
+    j.source_path = path
     return (j, audit) if with_audit else j
 
 
+def list_applications() -> List[Tuple[str, str]]:
+    """
+    [(name, kind)] for every application found, kind being 'private' or
+    'example'. Names are de-duplicated with private files winning, matching
+    what resolve_application_path would pick.
+    """
+    out: List[Tuple[str, str]] = []
+    seen = set()
+    for d, kind in ((APPLICATION_DIR, "private"), (EXAMPLE_DIR, "example")):
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".json") or f.startswith("_"):
+                continue
+            name = f[:-5]
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append((name, kind))
+    return out
+
+
+# Applications were called "joints" before it became clear that a joint file and
+# an application file were the same thing. Keep the old names working.
+load_joint = load_application
+
+
 def list_joints() -> List[str]:
-    if not os.path.isdir(JOINT_DIR):
-        return []
-    return sorted(f[:-5] for f in os.listdir(JOINT_DIR)
-                  if f.endswith(".json") and not f.startswith("_"))
+    return [n for n, _ in list_applications()]
