@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Applications are private.
+#
+# An application file describes one joint on one real robot: payload, geometry,
+# the bus voltage your robot supplies, the ambient inside your shell. That is
+# proprietary design data, and the reports and charts generated beside it are
+# too. This repo is public, so the whole directory is ignored by default.
+#
+# The bundled examples are deliberately exempted so a fresh clone can still run
+# the quick start in the README. Keep real work out of applications/examples/.
+# ---------------------------------------------------------------------------
+/applications/*
+!/applications/examples/
+!/applications/README.md
+
+# Generated results, wherever they land.
+*_report_*.txt
+*_charts_*.html
+
+# ...but the committed reference example outputs stay tracked.
+!/applications/examples/elbow_example_report_2X_rs00.txt
+!/applications/examples/charts_2x_RS00_elbow.html
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp

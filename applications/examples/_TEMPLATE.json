@@ -1,0 +1,153 @@
+{
+  "_README": [
+    "Copy this file to add an application -- one joint on one robot. Put it in",
+    "applications/ (gitignored) rather than in here, which is public.",
+    "",
+    "    cp applications/examples/_TEMPLATE.json applications/my_elbow.json",
+    "    ./eval_actuator.py -a robstride_00 -j my_elbow --save --charts",
+    "",
+    "Delete any field you do not need. Requirements you leave out are derived",
+    "from the motion profile instead. Do NOT invent numbers to fill gaps: an",
+    "omitted field gets a documented default and shows up in the report's",
+    "assumption list and sensitivity sweep, whereas a fabricated one looks like",
+    "data and silently corrupts the verdict.",
+    "",
+    "UNITS. Every physical value may be written three ways:",
+    "  1. explicit object   \"com_distance\": {\"value\": 11, \"units\": \"in\"}  <- preferred",
+    "  2. suffixed name     \"com_distance_mm\": 280",
+    "  3. bare number       \"com_distance\": 0.28   -> canonical SI assumed, and",
+    "                        flagged with ! in the report's UNIT AUDIT",
+    "A unit from the wrong dimension (kg for a length) is always a hard error.",
+    "Set \"strict_units\": true to reject form 3 outright.",
+    "Canonical units: mass kg, length m, inertia kg.m^2, angle rad, time s,",
+    "torque N.m, angular velocity rad/s, temperature degC, voltage V.",
+    "",
+    "MINIMUM VIABLE ENTRY: a name, a load, and either a profile or duty_segments.",
+    "Everything else has a defensible default."
+  ],
+  "strict_units": false,
+
+  "name": "My Elbow",
+  "kind": "revolute",
+
+  "_n_actuators": [
+    "How many actuators share this joint in parallel. Torque and mass scale by n",
+    "and each unit carries 1/n of the load, so every unit's thermal problem gets",
+    "easier. Compare options with -n 1,2,3 on the command line rather than",
+    "editing this."
+  ],
+  "n_actuators": 1,
+
+  "_ratio": [
+    "Extra reduction between the actuator OUTPUT and the joint itself -- a belt,",
+    "a linkage, a second gear stage. Leave at 1.0 for actuators mounted coaxially",
+    "on the joint axis. ratio_type sets the default efficiency and is one of:",
+    "direct | planetary_1stage | planetary_2stage | cycloidal | harmonic | belt | worm"
+  ],
+  "ratio": {"value": 1.0, "units": "-", "source": "vendor",
+            "note": "actuator mounted coaxially on the joint, no extra reduction"},
+  "ratio_type": "direct",
+
+  "_load": [
+    "What the joint has to move, all referred to the JOINT output.",
+    "gravity_factor: 1 = axis horizontal so the link swings against full gravity,",
+    "0 = vertical axis so gravity never loads the joint.",
+    "gravity_phase: the joint angle at which gravity torque peaks.",
+    "link_inertia is about the joint axis and should include the link itself;",
+    "the payload's own m*r^2 is added from payload_mass and com_distance."
+  ],
+  "load": {
+    "payload_mass":    {"value": 1.5,  "units": "kg"},
+    "com_distance":    {"value": 280,  "units": "mm"},
+    "link_inertia":    {"value": 350,  "units": "kg.cm^2"},
+    "gravity_factor":  {"value": 1.0,  "units": "-"},
+    "gravity_phase":   {"value": 0,    "units": "deg"},
+    "external_torque": {"value": 0,    "units": "N.m"},
+    "joint_friction":  {"value": 0.15, "units": "N.m"}
+  },
+
+  "_profile": [
+    "A repeated trapezoidal point-to-point move. This is the 'few inputs, lots of",
+    "output' path: give a stroke, a move time and a dwell, and the tool builds the",
+    "whole torque/speed/time history including inertia, gravity and the reflected",
+    "rotor inertia of the actuators actually fitted.",
+    "dwell_time is the rest between traverses and is the main knob you have over",
+    "heating -- the charts sweep it for you.",
+    "If you already have a measured torque/speed history, delete this block and",
+    "use duty_segments below instead."
+  ],
+  "profile": {
+    "stroke":         {"value": 90,   "units": "deg"},
+    "move_time":      {"value": 450,  "units": "ms"},
+    "dwell_time":     {"value": 0.35, "units": "s"},
+    "accel_fraction": {"value": 0.25, "units": "-"},
+    "theta_start":    {"value": -45,  "units": "deg"},
+    "samples": 160
+  },
+
+  "_duty_segments": [
+    "Alternative to profile: an explicit [[dt, torque, speed], ...] history at the",
+    "JOINT, with the units declared alongside. Takes precedence over profile if",
+    "both are present. Include the rest periods as zero-speed segments -- and note",
+    "that a gravity-loaded joint still draws holding current at zero speed.",
+    "",
+    "\"duty_segments_units\": [\"s\", \"N.m\", \"rpm\"],",
+    "\"duty_segments\": [[0.2, 8.0, 40], [0.3, 2.0, 60], [0.5, 1.2, 0]]"
+  ],
+
+  "_POWER_SYSTEM": [
+    "Bus voltage is a property of THIS robot, not of the actuator. The vendor's",
+    "rated voltage is only what they characterised the unit at. Set the voltage",
+    "your robot actually supplies here; the actuator file declares the range it",
+    "will accept, and the two are checked against each other.",
+    "Running ABOVE the vendor nominal is routine and simply extends the speed",
+    "envelope -- higher voltage buys speed, not torque and not thermal margin.",
+    "Running above their stated MAXIMUM is limited by transistor and DC-link",
+    "capacitor ratings rather than by heat, so it cannot be cleared on thermal",
+    "grounds; set accept_overvoltage true to acknowledge the risk and downgrade",
+    "that check from a failure to a warning.",
+    "Omit bus_voltage entirely to fall back to the actuator's nominal.",
+    "supply_current_limit is optional -- omit it if the supply can always deliver",
+    "more than the drive's own current rating, which is the usual case."
+  ],
+  "bus_voltage": {"value": 48, "units": "V",
+                  "note": "state the pack you actually use, e.g. 13S lithium"},
+  "accept_overvoltage": false,
+
+  "_THERMAL": [
+    "T_ambient is the air INSIDE your shell next to the actuator, not room",
+    "temperature. It is routinely 15-25 degC above ambient in an enclosed arm and",
+    "it moves the thermal verdict more than almost anything else.",
+    "max_surface_temp turns the computed housing temperature into a pass/fail",
+    "criterion, and is frequently the real constraint on a human-adjacent robot.",
+    "ISO 13732-1 is the relevant standard for touch limits; the threshold depends",
+    "on material and contact duration, so set it from your own safety case. Omit",
+    "it if the housing is not reachable by an operator.",
+    "mounting sets the default case-to-ambient thermal resistance and is one of:",
+    "free_air | bolted_plastic | bolted_metal | heatsunk"
+  ],
+  "T_ambient": {"value": 40, "units": "degC",
+                "note": "inside the arm shell, NOT room temperature"},
+  "max_surface_temp": {"value": 48, "units": "degC",
+                       "note": "housing reachable by the operator; set from your own safety case"},
+  "mounting": "bolted_metal",
+
+  "_REQUIREMENTS": [
+    "Optional hard requirements. Anything omitted is derived from the motion",
+    "above, so only set these where you have a real specification to meet: they",
+    "are combined with the computed demand using whichever is larger.",
+    "require_backdrivable adds a check that the joint can be pushed by hand,",
+    "targeting under 10% of peak torque."
+  ],
+  "mass_budget": {"value": 800, "units": "g"},
+  "require_backdrivable": true,
+
+  "_OPTIONAL_REQUIREMENTS": [
+    "\"tau_peak_req\":  {\"value\": 12,  \"units\": \"N.m\"},",
+    "\"tau_cont_req\":  {\"value\": 4,   \"units\": \"N.m\"},",
+    "\"omega_max_req\": {\"value\": 60,  \"units\": \"rpm\"},",
+    "\"supply_current_limit\": {\"value\": 10, \"units\": \"A\"},",
+    "\"position_tolerance\":   {\"value\": 0.1, \"units\": \"deg\"},",
+    "\"lead\": {\"value\": 5, \"units\": \"mm\"}   <- prismatic joints: m per output rev"
+  ]
+}
