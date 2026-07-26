@@ -8,16 +8,16 @@ canonical SI unit before any physics touches it.
 
 Three ways to give a value, in order of preference:
 
-  1. Explicit object   "com_distance": {"value": 11, "units": "in"}
-  2. Suffixed name     "com_distance_in": 11
-  3. Bare number       "com_distance": 0.28        -> assumed canonical (m)
+  1. Explicit object   "distance_joint_axis_to_CG": {"value": 11, "units": "in"}
+  2. Suffixed name     "distance_joint_axis_to_CG_in": 11
+  3. Bare number       "distance_joint_axis_to_CG": 0.28  -> assumed canonical (m)
 
 Form 3 is accepted so quick edits stay quick, but every bare number is recorded
 and listed in the report's UNIT AUDIT so an assumption never passes silently.
 Set "strict_units": true in a file to make form 3 a hard error.
 
 A unit that does not belong to the field's dimension is ALWAYS an error, never
-a warning: writing "com_distance": {"value": 280, "units": "kg"} is a mistake
+a warning: writing "distance_joint_axis_to_CG": {"value": 280, "units": "kg"} is a mistake
 no default can rescue.
 """
 
@@ -66,6 +66,14 @@ REGISTRY: Dict[str, Dict[str, Tuple[float, float]]] = {
     "angular_velocity": {"rad/s": (1.0, 0.0), "rpm": (RPM, 0.0),
                          "deg/s": (DEG, 0.0), "rev/s": (2 * math.pi, 0.0),
                          "Hz": (2 * math.pi, 0.0)},
+    "angular_accel": {"rad/s^2": (1.0, 0.0), "rad/s2": (1.0, 0.0),
+                      "deg/s^2": (DEG, 0.0), "deg/s2": (DEG, 0.0),
+                      "rev/s^2": (2 * math.pi, 0.0),
+                      "rpm/s": (RPM, 0.0)},
+    "angular_jerk": {"rad/s^3": (1.0, 0.0), "rad/s3": (1.0, 0.0),
+                     "deg/s^3": (DEG, 0.0), "deg/s3": (DEG, 0.0),
+                     "rev/s^3": (2 * math.pi, 0.0),
+                     "rpm/s^2": (RPM, 0.0)},
     "temperature": {"degC": (1.0, 0.0), "C": (1.0, 0.0), "degF": (5.0 / 9.0, -32 * 5.0 / 9.0),
                     "F": (5.0 / 9.0, -32 * 5.0 / 9.0), "K": (1.0, -273.15)},
     "temperature_delta": {"degC": (1.0, 0.0), "K": (1.0, 0.0),
@@ -159,14 +167,21 @@ def parse_value(container: dict, key: str, dimension: str,
                 audit: Optional[UnitAudit] = None,
                 strict: bool = False,
                 required: bool = False,
-                default: Optional[float] = None):
+                default: Optional[float] = None,
+                default_unit: Optional[str] = None):
     """
     Pull `key` out of `container`, in whatever form it was written, and return
     the value converted to the canonical unit for `dimension`.
 
+    `default_unit` overrides the canonical unit when the file gives a number
+    without stating units. Use it where the canonical SI unit is not what an
+    author would naturally write: joint angles are read as degrees, because a
+    bare 90 means 90 degrees to everyone except the SI definition of radians.
+
     Returns None if absent and not required.
     """
     canon = canonical_unit(dimension)
+    assumed = default_unit or canon
 
     # form 1: explicit object
     if key in container and isinstance(container[key], dict):
@@ -178,9 +193,11 @@ def parse_value(container: dict, key: str, dimension: str,
                 raise UnitError(
                     f"field '{key}' has no 'units' and strict_units is on. "
                     f"Valid units: {', '.join(valid_units(dimension))}")
-            v = float(d["value"])
+            v = convert(float(d["value"]), assumed, dimension)
             if audit:
-                audit.record(key, v, canon, f"{d['value']} (no units given)", False)
+                audit.record(key, v, canon,
+                             f"{d['value']} (no units given, {assumed} assumed)",
+                             False)
             return v
         unit = d["units"]
         v = convert(float(d["value"]), unit, dimension)
@@ -188,7 +205,7 @@ def parse_value(container: dict, key: str, dimension: str,
             audit.record(key, v, canon, f"{d['value']} {unit}", True)
         return v
 
-    # form 2: suffixed field name, e.g. com_distance_mm or Ke_Vrms_per_kRPM
+    # form 2: suffixed field name, e.g. distance_joint_axis_to_CG_mm or Ke_Vrms_per_kRPM
     for unit in sorted(valid_units(dimension), key=len, reverse=True):
         if not unit or unit == "-":
             continue
@@ -219,9 +236,11 @@ def parse_value(container: dict, key: str, dimension: str,
                 f"field '{key}' is a bare number and strict_units is on. "
                 f"Write it as {{\"value\": X, \"units\": \"...\"}}. "
                 f"Valid units: {', '.join(valid_units(dimension))}")
-        v = float(container[key])
+        v = convert(float(container[key]), assumed, dimension)
         if audit:
-            audit.record(key, v, canon, f"{container[key]} (bare number)", False)
+            audit.record(key, v, canon,
+                         f"{container[key]} (bare number, {assumed} assumed)",
+                         False)
         return v
 
     if required:
@@ -251,21 +270,32 @@ JOINT_DIMENSIONS = {
 }
 
 LOAD_DIMENSIONS = {
-    "payload_mass": "mass",
-    "com_distance": "length",
-    "link_inertia": "inertia",
-    "gravity_factor": "dimensionless",
-    "gravity_phase": "angle",
+    "total_mass_at_CG": "mass",
+    "distance_joint_axis_to_CG": "length",
+    "moment_of_inertia_around_CG": "inertia",
+    "joint_plane_tilt": "angle",
+    "gravity_angle": "angle",
     "external_torque": "torque",
     "joint_friction": "torque",
 }
 
 PROFILE_DIMENSIONS = {
-    "stroke": "angle",
-    "move_time": "time",
+    "stroke_start": "angle",
+    "stroke_end": "angle",
+    "max_velocity": "angular_velocity",
+    "max_accel": "angular_accel",
+    "max_jerk": "angular_jerk",
     "dwell_time": "time",
-    "accel_fraction": "dimensionless",
-    "theta_start": "angle",
+}
+
+# Fields whose unstated unit is NOT the canonical SI one. Joint angles are the
+# case that matters: an author writing a bare 90 means degrees, and silently
+# reading it as 90 radians is a 5157-degree error that still evaluates.
+DEFAULT_UNITS = {
+    "stroke_start": "deg",
+    "stroke_end": "deg",
+    "gravity_angle": "deg",
+    "joint_plane_tilt": "deg",
 }
 
 ACTUATOR_DIMENSIONS = {

@@ -75,6 +75,32 @@ def render(ev: Evaluation, verbose: bool = True) -> str:
         add(f"  RMS current           : {ev.extras.get('i_rms_duty', 0):8.2f} A_rms")
         add(f"  peak speed            : {wmax*RPM:8.0f} rpm")
 
+    # --- commanded motion: solved, not prescribed -------------------------
+    # move_time is an OUTPUT of the limit solver, so it is reported rather than
+    # echoed back. The binding limit is the actionable number: it names which
+    # of the three controller limits to change to make the move faster or
+    # easier on the actuator.
+    if "move_time" in ev.extras and j.profile is not None:
+        p = j.profile
+        reg = ev.extras.get("regime", "?")
+        add("")
+        add("COMMANDED MOTION (solved from the controller's limits)")
+        add(f"  stroke                : {math.degrees(p.stroke):8.1f} deg  "
+            f"({math.degrees(p.stroke_start):.1f} -> "
+            f"{math.degrees(p.stroke_end):.1f})")
+        add(f"  move time (solved)    : {p.move_time*1e3:8.0f} ms per traverse"
+            f"   <- {reg}-limited")
+        add(f"  dwell at each end     : {p.dwell_time*1e3:8.0f} ms")
+        def _lim(reached: float, limit: float, unit: str) -> str:
+            at = "AT LIMIT" if reached >= limit * 0.999 else "below"
+            return f"{reached:8.1f} {unit} (limit {limit:.1f}, {at})"
+        add(f"  peak velocity         : "
+            f"{_lim(p.peak_velocity*RPM, p.max_velocity*RPM, 'rpm')}")
+        add(f"  peak acceleration     : "
+            f"{_lim(p.peak_accel, p.max_accel, 'rad/s^2')}")
+        add(f"  jerk                  : {p.max_jerk:8.1f} rad/s^3 "
+            f"(always at limit during transitions)")
+
     # --- criteria table ---
     add("")
     add("CRITERIA")

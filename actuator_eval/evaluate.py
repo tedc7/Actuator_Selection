@@ -70,10 +70,11 @@ class Evaluation:
     thermal: Optional[phys.ThermalResult] = None
     duty_segments: List = field(default_factory=list)      # per actuator output
     joint_segments: List = field(default_factory=list)     # at the joint
+    motion_phases: List = field(default_factory=list)      # tag per joint_segment
     unit_audits: List = field(default_factory=list)
     assumptions: List[P] = field(default_factory=list)
     sensitivity: Dict[str, List[str]] = field(default_factory=dict)
-    extras: Dict[str, float] = field(default_factory=dict)
+    extras: Dict[str, object] = field(default_factory=dict)
 
     @property
     def verdict(self) -> str:
@@ -107,6 +108,7 @@ def evaluate(act: Actuator, joint: Joint, run_sensitivity: bool = True) -> Evalu
         segs.append((dt, tau_a, om_a))
     ev.duty_segments = segs
     ev.joint_segments = list(joint_segs)
+    ev.motion_phases = joint.motion_phases()
 
     tau_peak_joint = max(abs(t) for _, t, _ in joint_segs) if joint_segs else 0.0
     om_peak_joint = max(abs(w) for _, _, w in joint_segs) if joint_segs else 0.0
@@ -162,6 +164,54 @@ def evaluate(act: Actuator, joint: Joint, run_sensitivity: bool = True) -> Evalu
             detail=f"tightest point: {worst_pt[0]:.2f} N.m at "
                    f"{worst_pt[1]*30/math.pi:.0f} rpm (actuator output)",
             depends_on=["Ke", "V_bus_nom", "R_phase", "L_phase"]))
+
+    # ---- 3b. can the actuator actually FOLLOW the commanded trajectory? ----
+    # The profile is the controller's own minimum-time S-curve under
+    # max_velocity / max_accel / max_jerk -- it is commanded open-loop, with no
+    # knowledge of this actuator. So the question is whether the torque that
+    # motion demands is available at the speed it demands it, at every instant.
+    # Two distinct ways to fail, reported separately because the fixes differ:
+    # short of torque means lower max_accel, short of speed means lower
+    # max_velocity.
+    if joint.profile is not None and joint.duty_segments is None:
+        phases = ev.motion_phases if len(ev.motion_phases) == len(segs) else []
+        worst = float("inf")
+        worst_at = None
+        for i, (_, tau_a, om_a) in enumerate(segs):
+            avail = phys.max_torque_at_speed(act, abs(om_a), v_bus)
+            if abs(tau_a) <= 1e-9:
+                continue
+            m = avail / abs(tau_a)
+            if m < worst:
+                worst = m
+                worst_at = (abs(tau_a), abs(om_a), avail,
+                            phases[i] if phases else "move")
+        prof = joint.profile
+        no_load = phys.no_load_speed_out(act, v_bus)
+        om_cmd_act = prof.peak_velocity * float(joint.ratio)
+        if worst_at is not None:
+            tau_need, om_need, avail, ph = worst_at
+            if om_cmd_act > no_load:
+                why = (f"commanded {om_cmd_act*30/math.pi:.0f} rpm at the "
+                       f"actuator exceeds its {no_load*30/math.pi:.0f} rpm "
+                       f"no-load speed on a {v_bus:.0f} V bus: reduce "
+                       f"max_velocity")
+            else:
+                why = (f"tightest during {ph}: needs {tau_need:.2f} N.m at "
+                       f"{om_need*30/math.pi:.0f} rpm, envelope gives "
+                       f"{avail:.2f} N.m")
+            ev.criteria.append(Criterion.from_margin(
+                "Trajectory following", tau_need, tau_need * worst, "N.m",
+                confidence=worst_source(act.Ke, act.R_phase, act.V_bus_nom,
+                                        act.J_rotor),
+                detail=(f"{prof.regime}-limited move, solved "
+                        f"{prof.move_time*1e3:.0f} ms per traverse; {why}"),
+                depends_on=["Ke", "V_bus_nom", "R_phase", "L_phase",
+                            "J_rotor"]))
+        ev.extras["move_time"] = prof.move_time
+        ev.extras["regime"] = prof.regime
+        ev.extras["peak_velocity_cmd"] = prof.peak_velocity
+        ev.extras["peak_accel_cmd"] = prof.peak_accel
 
     # ---- 4. thermal (the one that usually decides it) ---------------------
     th = phys.simulate_duty(act, segs, joint.T_ambient)
