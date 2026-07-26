@@ -8,10 +8,11 @@ comparisons are done by generating one chart set per configuration.
 
 Three plots:
 
-  1. Torque-speed envelope -- WHERE does this configuration's duty cycle sit
-     relative to its limits? A table says "peak margin 2.8x"; the plot shows
-     whether that margin is all at low speed and nearly gone at the top of the
-     stroke.
+  1. Torque-speed envelope -- WHERE do this configuration's operating points
+     sit relative to its limits? A table says "peak margin 2.8x"; the plot
+     shows whether that margin is all at low speed and nearly gone at the top
+     of the stroke. These are the points of ONE motion cycle, split by phase of
+     the trapezoid; "duty" in the duty-factor sense belongs to chart 2 only.
   2. Thermal warm-up, for a FAMILY of duty cycles -- how hard can this
      configuration be worked before heat becomes the constraint? The duty
      cycles differ in rest time, which is the knob a designer actually has.
@@ -37,6 +38,22 @@ INK = "#1a1a1a"
 MUTED = "#6b6b6b"
 GRID = "#dcdcdc"
 STATUS_COLOR = {PASS: "#009E73", MARGINAL: "#E69F00", FAIL: "#D55E00"}
+
+# Phases of the trapezoidal move, in legend order. Deliberately avoids the
+# colours already spoken for on chart 1: SERIES[0] is the voltage envelope,
+# SERIES[2] the continuous line, and #D55E00 the peak-demand marker.
+#
+# Accel and decel land in different torque bands, so each direction gets a
+# light/dark pair of one hue: the hue says which stroke, the shade says which
+# way the joint is being worked.
+PHASE_STYLE = [
+    ("Move_Pos_Accel", "#7C3AED"),   # violet, dark  -- upper band
+    ("Move_Pos_Decel", "#C4A5F5"),   # violet, light -- lower band
+    ("Move_Neg_Accel", "#0E7490"),   # teal,   dark  -- lower band
+    ("Move_Neg_Decel", "#7DD3E8"),   # teal,   light -- upper band
+    ("Cruise",         "#B45309"),   # at max_velocity, zero acceleration
+    ("Dwell",          "#3a3a3a"),   # dwell_time rest, holding against gravity
+]
 
 
 def _esc(s) -> str:
@@ -90,6 +107,26 @@ class Plot:
         self.legend: List[Tuple[str, str, str]] = []
         self.xlo = self.xhi = self.ylo = self.yhi = None
         self.ymin_floor = None          # force the y axis to start here
+
+    # -- legend sizing ----------------------------------------------------
+    def _legend_rows(self) -> int:
+        """How many rows the legend wraps onto at the current plot width."""
+        if not self.legend:
+            return 0
+        rows, x = 1, 0.0
+        for label, _, _ in self.legend:
+            w_item = 30 + 6.1 * len(label)
+            if x > 0 and x + w_item > self.pw:
+                rows, x = rows + 1, w_item
+            else:
+                x += w_item
+        return rows
+
+    def _grow_for_legend(self):
+        """Reserve top margin for legend rows beyond the first."""
+        extra = 15 * (self._legend_rows() - 1)
+        if extra > 0:
+            self.mt += extra
 
     # -- range ------------------------------------------------------------
     def fit(self, xs: Sequence[float] = (), ys: Sequence[float] = ()):
@@ -226,6 +263,7 @@ class Plot:
 
     # -- render ------------------------------------------------------------
     def render(self) -> str:
+        self._grow_for_legend()
         self._finalise()
         o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {self.w} {self.h}" '
              f'width="100%" style="max-width:{self.w}px;height:auto;font-family:'
@@ -276,8 +314,18 @@ class Plot:
                      f'{_esc(self.ylabel)}</text>')
 
         if self.legend:
-            x, y = self.ml, self.mt - 10
+            # Wrap onto extra rows rather than running off the right edge: the
+            # number of series is not known when the margins are chosen, so a
+            # single row silently overflows as soon as labels get long. Rows
+            # start high enough that the last one lands just above the plot;
+            # _grow_for_legend() has already widened the top margin to suit.
+            rows = self._legend_rows()
+            x = self.ml
+            y = self.mt - 10 - 15 * (rows - 1)
             for label, colour, kind in self.legend:
+                w_item = 30 + 6.1 * len(label)
+                if x > self.ml and x + w_item > self.ml + self.pw:
+                    x, y = self.ml, y + 15
                 if kind == "dot":
                     o.append(f'<circle cx="{x+6}" cy="{y-4}" r="3.6" fill="{colour}"/>')
                 elif kind == "star":
@@ -288,7 +336,7 @@ class Plot:
                              f'stroke="{colour}" stroke-width="2.4"{da}/>')
                 o.append(f'<text x="{x+22}" y="{y}" font-size="11" fill="{INK}">'
                          f'{_esc(label)}</text>')
-                x += 30 + 6.1 * len(label)
+                x += w_item
         o.append("</svg>")
         return "\n".join(o)
 
@@ -377,7 +425,7 @@ def duty_variants(ev: Evaluation, rest_scales=(0.0, 0.5, 1.0, 2.0)):
 # Chart 1: torque-speed envelope, single configuration
 # ---------------------------------------------------------------------------
 
-def torque_speed(ev: Evaluation, width=680, height=420) -> str:
+def torque_speed(ev: Evaluation, width=1020, height=630) -> str:
     a, j = ev.actuator, ev.joint
     n = j.n_actuators
     cfg = f"{n}x {a.name}"
@@ -406,10 +454,25 @@ def torque_speed(ev: Evaluation, width=680, height=420) -> str:
 
     segs = getattr(ev, "joint_segments", None) or []
     if segs:
-        dx = [abs(w) * RPM for _, _, w in segs]
-        dy = [abs(t) for _, t, _ in segs]
-        p.scatter(dx, dy, "#3a3a3a", "duty cycle (as specified)", r=2.7,
-                  opacity=0.62)
+        # Operating points over ONE motion cycle -- not a duty percentage.
+        # Both torque and speed are magnitudes, so accel and decel of the SAME
+        # stroke would otherwise land in different bands under one label: with
+        # inertia dominating gravity, what sets the band is whether the joint is
+        # speeding up or slowing down. Hence accel/decel x direction, split out.
+        phases = getattr(ev, "motion_phases", None) or []
+        if len(phases) == len(segs):
+            for name, colour in PHASE_STYLE:
+                idx = [k for k, ph in enumerate(phases) if ph == name]
+                if not idx:
+                    continue
+                p.scatter([abs(segs[k][2]) * RPM for k in idx],
+                          [abs(segs[k][1]) for k in idx],
+                          colour, name, r=2.7, opacity=0.72)
+        else:
+            # No trajectory to classify (explicit duty_segments in the JSON).
+            p.scatter([abs(w) * RPM for _, _, w in segs],
+                      [abs(t) for _, t, _ in segs],
+                      "#3a3a3a", "operating points", r=2.7, opacity=0.62)
         i = max(range(len(segs)), key=lambda k: abs(segs[k][1]))
         p.marker(abs(segs[i][2]) * RPM, abs(segs[i][1]), "#D55E00",
                  "peak demand", r=6.0)
@@ -427,7 +490,7 @@ def torque_speed(ev: Evaluation, width=680, height=420) -> str:
 # Chart 2: thermal warm-up across the duty-cycle family
 # ---------------------------------------------------------------------------
 
-def thermal(ev: Evaluation, width=680, height=420) -> str:
+def thermal(ev: Evaluation, width=1020, height=630) -> str:
     a, j = ev.actuator, ev.joint
     n = j.n_actuators
     cfg = f"{n}x {a.name}"
@@ -473,7 +536,7 @@ def thermal(ev: Evaluation, width=680, height=420) -> str:
 # Chart 3: margins
 # ---------------------------------------------------------------------------
 
-def margins(ev: Evaluation, width=680) -> str:
+def margins(ev: Evaluation, width=1020) -> str:
     crits = [c for c in ev.criteria if c.margin_meaningful]
     row_h, ml, mr = 26, 196, 74
     height = 82 + row_h * len(crits)
@@ -527,7 +590,7 @@ def margins(ev: Evaluation, width=680) -> str:
 _CSS = """
 body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:32px;
 background:#fff;color:#1a1a1a;line-height:1.5}
-.wrap{max-width:760px;margin:0 auto}
+.wrap{max-width:1140px;margin:0 auto}
 h1{font-size:21px;margin:0 0 4px}
 h2{font-size:15px;margin:34px 0 10px;font-weight:600}
 .sub{color:#6b6b6b;font-size:13px;margin-bottom:26px}
@@ -568,12 +631,16 @@ def write_html(ev: Evaluation, path: str, text_report: str = "") -> str:
         f"{ev.verdict}</span> &nbsp; binding constraint: {_esc(b.name)} "
         f"({b.margin:.2f}x)</div>",
 
-        "<h2>1. Where the duty cycle sits against the limits</h2>",
+        "<h2>1. Where the motion sits against the limits</h2>",
         f"<figure>{torque_speed(ev)}<figcaption>The peak curve falls away with "
-        f"speed as back-EMF eats the available bus voltage. Every duty-cycle "
+        f"speed as back-EMF eats the available bus voltage. Every operating "
         f"point must sit under it; the cycle's RMS must sit under the "
-        f"continuous line. Points shown are the duty cycle as specified for "
-        f"this configuration.</figcaption></figure>",
+        f"continuous line, which individual points may exceed. Points shown are "
+        f"the operating points over one motion cycle as specified, split by "
+        f"phase of the trapezoidal move: the two directions of travel carry "
+        f"different torque because gravity aids one and opposes the other. "
+        f"Duty <em>factor</em> is varied in chart 2, not here."
+        f"</figcaption></figure>",
 
         "<h2>2. Thermal margin across duty cycles</h2>",
         f"<figure>{thermal(ev)}<figcaption>Same motion and the same "

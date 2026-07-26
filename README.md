@@ -130,9 +130,9 @@ physics runs.
 Three ways to write a value:
 
 ```jsonc
-"com_distance": {"value": 11, "units": "in"}   // 1. explicit  <- preferred
-"com_distance_mm": 280                          // 2. unit in the field name
-"com_distance": 0.28                            // 3. bare -> canonical SI assumed
+"distance_joint_axis_to_CG": {"value": 11, "units": "in"} // 1. explicit  <- preferred
+"distance_joint_axis_to_CG_mm": 280                      // 2. unit in the field name
+"distance_joint_axis_to_CG": 0.28                        // 3. bare -> canonical SI assumed
 ```
 
 Form 3 keeps quick edits quick, but every bare number is listed in the report's
@@ -161,8 +161,8 @@ Every chart describes **exactly one actuator configuration** &mdash; the same on
 the text report describes, so the two can never disagree. To compare candidates,
 generate one chart set per candidate and put them side by side.
 
-1. **Torque-speed envelope** with that configuration's duty cycle scattered on
-   top, and the peak demand called out. A table says "peak margin 2.8x"; the plot
+1. **Torque-speed envelope** with that configuration's operating points scattered
+   on top, split by phase of the S-curve move, and the peak demand called out. A table says "peak margin 2.8x"; the plot
    shows whether that margin is all at low speed and nearly gone at the top of
    the stroke.
 2. **Thermal warm-up from cold, for a family of four duty cycles** on the same
@@ -218,6 +218,7 @@ The important rule: **leave out what you do not know.** An omitted field gets a 
 | Peak torque | Can it make the highest instantaneous torque the motion needs? |
 | Speed at load | Can it reach top speed *while* making the torque required there? |
 | Torque-speed envelope | Does every point of the duty cycle sit inside the voltage-limited envelope? |
+| Trajectory following | Can it follow the commanded S-curve &mdash; the minimum-time move under the controller's `max_velocity` / `max_accel` / `max_jerk`? |
 | Thermal (winding) | Does the winding stay below its insulation limit at periodic steady state? |
 | Continuous torque | Is the duty-cycle RMS current within the thermally sustainable limit? |
 | Drive current limit | Does the demanded phase current exceed the drive's own rating? |

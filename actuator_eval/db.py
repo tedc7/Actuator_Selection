@@ -209,18 +209,96 @@ def joint_from_dict(d: Dict) -> Tuple[Joint, U.UnitAudit]:
 
     if "load" in d:
         ld = d["load"]
+        # Renamed fields are a hard error, never a silent drop: the parser only
+        # reads keys it knows, so an un-renamed file would otherwise lose its
+        # payload distance and evaluate against zero gravity torque.
+        for old, new in (("com_distance", "distance_joint_axis_to_CG"),
+                         ("payload_distance", "distance_joint_axis_to_CG"),
+                         ("payload_mass", "total_mass_at_CG"),
+                         ("gravity_phase", "gravity_angle")):
+            if any(k == old or k.startswith(old + "_") for k in ld):
+                raise ValueError(
+                    f"'{old}' was renamed to '{new}'. Update the load block of "
+                    f"this application file; the value and units are unchanged.")
+        # link_inertia is the one whose MEANING moved, not just its name: it was
+        # documented as inertia about the joint axis, and is now stated about the
+        # CG with this module doing the parallel-axis transfer. Passing an
+        # axis-referred figure through silently would double-count m*d^2.
+        if any(k == "link_inertia" or k.startswith("link_inertia_") for k in ld):
+            raise ValueError(
+                "'link_inertia' was replaced by 'moment_of_inertia_around_CG', "
+                "which is referred to the CENTRE OF GRAVITY rather than to the "
+                "joint axis -- the parallel-axis transfer "
+                "total_mass_at_CG * distance_joint_axis_to_CG^2 is now added for "
+                "you. Take the CAD figure about the CG directly; if all you have "
+                "is an axis-referred inertia I_axis, use "
+                "moment_of_inertia_around_CG = I_axis - m*d^2.")
+        # gravity_factor -> joint_plane_tilt is not a rename: the value changes
+        # meaning from cos(tilt) to the tilt angle itself.
+        if any(k == "gravity_factor" or k.startswith("gravity_factor_")
+               for k in ld):
+            raise ValueError(
+                "'gravity_factor' was replaced by 'joint_plane_tilt', an ANGLE "
+                "(degrees by default) rather than a 0..1 scale: it is the tilt "
+                "of the joint's plane of rotation out of vertical. "
+                "gravity_factor 1.0 -> joint_plane_tilt 0 deg; "
+                "0.0 -> 90 deg; otherwise joint_plane_tilt = acos(gravity_factor).")
+        # The gravity_angle CONVENTION changed with the same release: it now
+        # points along the gravity vector (where the payload hangs, zero
+        # torque) instead of marking the torque peak. A file written for the
+        # old convention parses cleanly but is wrong by 90 degrees, so the new
+        # spelling of the tilt field is what distinguishes them -- hence the
+        # check above must fire before any gravity_angle value is trusted.
         kw = {}
         for k, dim in U.LOAD_DIMENSIONS.items():
-            val = U.parse_value(ld, k, dim, audit=audit, strict=strict)
+            val = U.parse_value(ld, k, dim, audit=audit, strict=strict,
+                                default_unit=U.DEFAULT_UNITS.get(k))
             if val is not None:
                 kw[k] = val
         j.load = Load(**kw)
 
     if "profile" in d:
         pd = d["profile"]
+        # As with the load block: renamed keys must not be silently dropped.
+        # 'stroke' + 'theta_start' described the same move as a start plus a
+        # signed sweep; the two endpoints say it directly.
+        # Match the old name and its unit-suffixed spellings (stroke_deg), but
+        # not stroke_start / stroke_end, which share the 'stroke' prefix.
+        def _is_old(key: str, old: str) -> bool:
+            if any(key == n or key.startswith(n + "_")
+                   for n in U.PROFILE_DIMENSIONS):
+                return False
+            return key == old or key.startswith(old + "_")
+
+        for old, new in (("stroke", "stroke_start/stroke_end"),
+                         ("theta_start", "stroke_start")):
+            if any(_is_old(k, old) for k in pd):
+                raise ValueError(
+                    f"'{old}' was replaced by '{new}'. Give the two endpoints "
+                    f"of the travel instead, e.g. stroke_start -45, stroke_end "
+                    f"45 (degrees by default).")
+
+        # move_time and accel_fraction described the move by prescribing its
+        # DURATION and shape. The profile is now solved as the minimum-time
+        # S-curve under the controller's own kinematic limits, so move_time is
+        # an OUTPUT and the shape follows from which limit binds. A file
+        # carrying the old keys would otherwise parse cleanly and silently
+        # ignore them, reporting a move time the author never asked for.
+        for old in ("move_time", "accel_fraction"):
+            if any(_is_old(k, old) for k in pd):
+                raise ValueError(
+                    f"'{old}' is no longer an input. The trajectory is now the "
+                    f"fastest move that respects max_velocity, max_accel and "
+                    f"max_jerk, so the move time is SOLVED and reported rather "
+                    f"than prescribed. State the three limits your motion "
+                    f"controller enforces, e.g. max_velocity 260 rpm, "
+                    f"max_accel 40 rad/s^2, max_jerk 800 rad/s^3. To reproduce "
+                    f"a specific move time, raise or lower the limit that "
+                    f"binds (the report names it).")
         kw = {}
         for k, dim in U.PROFILE_DIMENSIONS.items():
-            val = U.parse_value(pd, k, dim, audit=audit, strict=strict)
+            val = U.parse_value(pd, k, dim, audit=audit, strict=strict,
+                                default_unit=U.DEFAULT_UNITS.get(k))
             if val is not None:
                 kw[k] = val
         if "samples" in pd:

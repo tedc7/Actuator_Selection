@@ -55,7 +55,7 @@ def test_templates_parse():
     with open(j_tpl) as f:
         joint, _ = db.joint_from_dict(json.load(f))
     assert joint.profile is not None, "template should carry a motion profile"
-    assert joint.load.payload_mass > 0
+    assert joint.load.total_mass_at_CG > 0
 
 
 def test_end_to_end_example():

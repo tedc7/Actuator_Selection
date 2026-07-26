@@ -319,71 +319,233 @@ class Actuator:
 
 @dataclass
 class Load:
-    """What the joint has to move. All referred to the JOINT output."""
-    payload_mass: float = 0.0        # kg at the COM distance
-    com_distance: float = 0.0        # m from joint axis to payload COM
-    link_inertia: float = 0.0        # kg.m^2 about the joint axis (link + payload)
-    gravity_factor: float = 1.0      # 1 = axis horizontal (full gravity), 0 = vertical axis
-    gravity_phase: float = 0.0       # rad; joint angle at which gravity torque peaks
+    """
+    What the joint has to move. All referred to the JOINT output.
+
+    The three mass properties are exactly what a CAD system reports for the
+    moving assembly, so they can be transcribed rather than pre-processed:
+    total mass, distance from the joint axis to the CG, and moment of inertia
+    about the CG. This module does the parallel-axis transfer to the joint axis
+    itself, which is what makes double-counting impossible -- nothing the user
+    states is referred to the joint axis, so nothing can be added to it twice.
+    """
+    total_mass_at_CG: float = 0.0        # kg, whole moving assembly
+    distance_joint_axis_to_CG: float = 0.0   # m, joint axis to the CG
+    moment_of_inertia_around_CG: float = 0.0  # kg.m^2 about the CG, NOT the axis
+    joint_plane_tilt: float = 0.0    # rad; tilt of the joint's plane of rotation
+                                     # out of vertical. 0 = plane contains gravity
+                                     # (full effect), 90 deg = plane horizontal
+                                     # (axis vertical, gravity does nothing)
+    gravity_angle: float = -math.pi / 2   # rad; joint angle at which the CG
+                                     # points ALONG the gravity vector (straight
+                                     # down), in the same frame as
+                                     # profile.stroke_start. Torque is zero there
+                                     # and peaks 90 deg away.
     external_torque: float = 0.0     # N.m constant disturbance
     joint_friction: float = 0.0      # N.m Coulomb at the joint
 
     def inertia_total(self) -> float:
-        return self.link_inertia + self.payload_mass * self.com_distance ** 2
+        """
+        Inertia about the JOINT AXIS, by the parallel axis theorem.
+
+        The transfer term m*d^2 is added here and nowhere else, so a CAD figure
+        can be copied in as-is: state the inertia about the CG, never about the
+        axis. Quoting an axis-referred inertia would double-count the transfer.
+        """
+        return (self.moment_of_inertia_around_CG
+                + self.total_mass_at_CG * self.distance_joint_axis_to_CG ** 2)
 
     def gravity_torque(self, theta: float) -> float:
-        return (self.payload_mass * G * self.com_distance
-                * self.gravity_factor * math.cos(theta - self.gravity_phase))
+        # Angles are referenced to the GRAVITY VECTOR, as in standard mechanics:
+        # gravity_angle points the way gravity does. An assembly whose CG hangs
+        # straight below the axis exerts no torque, and the moment arm grows as
+        # it swings away -- hence sin() of the offset, not cos().
+        # joint_plane_tilt then scales by how much of gravity this plane sees.
+        # Only the CG offset produces gravity torque; inertia about the CG does
+        # not, which is why the same three inputs serve both terms without any
+        # of them being a "payload" as distinct from the structure.
+        return (self.total_mass_at_CG * G * self.distance_joint_axis_to_CG
+                * math.cos(self.joint_plane_tilt)
+                * math.sin(theta - self.gravity_angle))
 
 
 @dataclass
 class MotionProfile:
     """
     Trapezoidal point-to-point move, repeated. This is the "few inputs, lots of
-    output" path: give a stroke, a move time and a duty, and the tool builds the
-    whole torque/speed/time history for you.
+    output" path: give the two endpoints, a move time and a dwell, and the tool
+    builds the whole torque/speed/time history for you.
+
+    The endpoints are joint angles in the same frame as Load.gravity_angle, so
+    where the move sits relative to gravity is explicit rather than implied by
+    a start plus a signed sweep.
     """
-    stroke: float = math.radians(90)   # rad, peak-to-peak
-    move_time: float = 0.5             # s for one traverse
+    stroke_start: float = math.radians(-45)   # rad, one end of the travel
+    stroke_end: float = math.radians(45)      # rad, the other end
+    max_velocity: float = 27.2         # rad/s  (260 rpm)
+    max_accel: float = 40.0            # rad/s^2
+    max_jerk: float = 800.0            # rad/s^3
     dwell_time: float = 0.5            # s at rest between traverses
-    accel_fraction: float = 0.25       # of move_time spent accelerating
-    theta_start: float = 0.0           # rad
     samples: int = 200
+
+    @property
+    def stroke(self) -> float:
+        """Signed travel from stroke_start to stroke_end (rad)."""
+        return self.stroke_end - self.stroke_start
+
+    # ------------------------------------------------------------------
+    def _solve(self) -> Tuple[float, float, float, float, float, str]:
+        """
+        Minimum-time S-curve for one traverse, honouring all three limits.
+
+        Returns (j, a, v, t_j, t_a, t_v, regime) where j/a/v are the jerk,
+        acceleration and velocity actually USED -- each is its limit or less --
+        and t_j/t_a/t_v are the durations of the jerk, constant-accel and
+        cruise phases. The move is always limited by at least one of the three,
+        so this is the fastest traverse the controller would command.
+
+        Three regimes, tested in order of how much of the profile survives:
+          velocity-limited  full 7 phases, a cruise exists
+          accel-limited     6 phases, reaches max_accel but never max_velocity
+          jerk-limited      4 phases, never even reaches max_accel
+        """
+        d = abs(self.stroke)
+        j = max(self.max_jerk, 1e-9)
+        a = max(self.max_accel, 1e-9)
+        v = max(self.max_velocity, 1e-9)
+
+        if d <= 1e-12:
+            return j, a, v, 0.0, 0.0, 0.0, "degenerate"
+
+        # Can acceleration reach `a` before the jerk phase alone would carry
+        # velocity past the point of no return? t_j = a/j is the ramp time.
+        t_j = a / j
+        # Velocity gained by one jerk-up plus one jerk-down pair at full `a`
+        # is a*t_j; reaching cruise speed `v` needs the constant-accel phase
+        # to supply the rest.
+        if v < a * t_j:
+            # Velocity limit bites before acceleration saturates: the accel
+            # phase is itself jerk-limited (triangular in alpha).
+            t_j = math.sqrt(v / j)
+            a_used = j * t_j
+            t_a = 0.0
+        else:
+            a_used = a
+            t_a = (v - a * t_j) / a
+
+        # Distance consumed getting up to speed and back down again.
+        d_ramp = 2.0 * self._ramp_distance(j, a_used, t_j, t_a)
+        if d_ramp <= d:
+            # Velocity-limited: there is distance left over for a cruise.
+            t_v = (d - d_ramp) / v
+            return j, a_used, v, t_j, t_a, t_v, "velocity"
+
+        # No cruise. Solve for the peak velocity that exactly fits `d`,
+        # first assuming acceleration still saturates at `a`.
+        # With t_j = a/j fixed, distance over accel+decel as a function of
+        # t_a is quadratic: d = a*(t_a + t_j)*(t_a + 2*t_j)
+        t_j = a / j
+        # a*t_a^2 + 3*a*t_j*t_a + (2*a*t_j^2 - d) = 0
+        disc = (3 * a * t_j) ** 2 - 4 * a * (2 * a * t_j * t_j - d)
+        t_a = (-3 * a * t_j + math.sqrt(max(disc, 0.0))) / (2 * a)
+        if t_a >= 0.0:
+            v_pk = a * (t_a + t_j)
+            return j, a, v_pk, t_j, t_a, 0.0, "accel"
+
+        # Jerk-limited: acceleration never reaches `a`. Four phases, and
+        # distance over a symmetric jerk-only accel/decel pair is 2*j*t_j^3.
+        t_j = (d / (2.0 * j)) ** (1.0 / 3.0)
+        return j, j * t_j, j * t_j * t_j, t_j, 0.0, 0.0, "jerk"
+
+    @staticmethod
+    def _ramp_distance(j: float, a: float, t_j: float, t_a: float) -> float:
+        """Distance covered accelerating from rest to cruise speed."""
+        # jerk up: theta = j*t_j^3/6, ends at omega = j*t_j^2/2
+        om1 = 0.5 * j * t_j * t_j
+        d1 = j * t_j ** 3 / 6.0
+        # constant accel
+        d2 = om1 * t_a + 0.5 * a * t_a * t_a
+        om2 = om1 + a * t_a
+        # jerk down to zero accel
+        d3 = om2 * t_j + 0.5 * a * t_j * t_j - j * t_j ** 3 / 6.0
+        return d1 + d2 + d3
+
+    @property
+    def move_time(self) -> float:
+        """Solved minimum time for ONE traverse, s. An OUTPUT, not an input."""
+        _, _, _, t_j, t_a, t_v, _ = self._solve()
+        return 4 * t_j + 2 * t_a + t_v
+
+    @property
+    def regime(self) -> str:
+        """Which limit binds: 'velocity', 'accel' or 'jerk'."""
+        return self._solve()[6]
+
+    @property
+    def peak_velocity(self) -> float:
+        return self._solve()[2]
+
+    @property
+    def peak_accel(self) -> float:
+        return self._solve()[1]
 
     def trajectory(self) -> List[Tuple[float, float, float, float]]:
         """Return [(t, theta, omega, alpha)] over one out-and-back cycle."""
-        a = min(max(self.accel_fraction, 0.01), 0.49)
-        T = self.move_time
-        ta = a * T
-        v = self.stroke / (T * (1.0 - a))
-        acc = v / ta
-        pts = []
+        j, a, v, t_j, t_a, t_v, regime = self._solve()
+        pts: List[Tuple[float, float, float, float]] = []
+        if regime == "degenerate":
+            return [(0.0, self.stroke_start, 0.0, 0.0),
+                    (max(self.dwell_time, 1e-3), self.stroke_start, 0.0, 0.0)]
+
+        # The seven phases, as (duration, jerk). Zero-length ones are skipped
+        # when sampling, which is what collapses this to 6 or 4 phases.
+        phases = ((t_j, +j), (t_a, 0.0), (t_j, -j),
+                  (t_v, 0.0),
+                  (t_j, -j), (t_a, 0.0), (t_j, +j))
+        T = 4 * t_j + 2 * t_a + t_v
+        dist = abs(self.stroke)
 
         def leg(theta0, sign, t0):
-            n = max(self.samples // 2, 20)
-            for i in range(n + 1):
-                t = T * i / n
-                if t < ta:
-                    om, al = acc * t, acc
-                    th = 0.5 * acc * t * t
-                elif t < T - ta:
-                    om, al = v, 0.0
-                    th = 0.5 * acc * ta * ta + v * (t - ta)
-                else:
-                    td = T - t
-                    om, al = acc * td, -acc
-                    th = self.stroke - 0.5 * acc * td * td
-                pts.append((t0 + t, theta0 + sign * th, sign * om, sign * al))
+            # Sample each phase on its OWN grid so every breakpoint in jerk
+            # lands exactly on a sample. Alpha is piecewise LINEAR here rather
+            # than piecewise constant, so a segment that straddled a breakpoint
+            # would misstate the torque over its whole span.
+            n = max(self.samples // 2, 28)
+            span = max(T, 1e-12)
+            th = om = al = 0.0
+            t_at = 0.0
+            pts.append((t0, theta0, 0.0, 0.0))
+            for dur, jk in phases:
+                if dur <= 1e-12:
+                    continue
+                th0, om0, al0 = th, om, al
+                k = max(int(round(n * dur / span)), 1)
+                for i in range(1, k + 1):
+                    dt = dur * i / k
+                    al = al0 + jk * dt
+                    om = om0 + al0 * dt + 0.5 * jk * dt * dt
+                    th = th0 + om0 * dt + 0.5 * al0 * dt * dt + jk * dt ** 3 / 6.0
+                    pts.append((t0 + t_at + dt, theta0 + sign * th,
+                                sign * om, sign * al))
+                t_at += dur
+                th, om, al = th, om, al
+            # Close out any accumulated rounding so the leg lands exactly on
+            # its endpoint: the consumer integrates torque, not position, but a
+            # drifting endpoint would make the return leg start in the wrong
+            # place and shift the gravity term.
+            t_end, _, _, _ = pts[-1]
+            pts[-1] = (t_end, theta0 + sign * dist, 0.0, 0.0)
 
-        leg(self.theta_start, +1, 0.0)
+        # `stroke` is signed, so a move defined end-to-start simply runs the
+        # other way: sign carries through position, velocity and acceleration.
+        s = 1.0 if self.stroke >= 0 else -1.0
+        leg(self.stroke_start, s, 0.0)
         if self.dwell_time > 0:
-            pts.append((T, self.theta_start + self.stroke, 0.0, 0.0))
-            pts.append((T + self.dwell_time, self.theta_start + self.stroke, 0.0, 0.0))
+            pts.append((T + self.dwell_time, self.stroke_end, 0.0, 0.0))
         t0 = T + self.dwell_time
-        leg(self.theta_start + self.stroke, -1, t0)
+        leg(self.stroke_end, -s, t0)
         if self.dwell_time > 0:
-            pts.append((t0 + T, self.theta_start, 0.0, 0.0))
-            pts.append((t0 + T + self.dwell_time, self.theta_start, 0.0, 0.0))
+            pts.append((t0 + T + self.dwell_time, self.stroke_start, 0.0, 0.0))
         return pts
 
     @property
@@ -490,7 +652,14 @@ class Joint:
             dt = t1 - t0
             if dt <= 0:
                 continue
-            th, om, al = 0.5 * (th0 + th1), 0.5 * (om0 + om1), 0.5 * (al0 + al1)
+            th, om = 0.5 * (th0 + th1), 0.5 * (om0 + om1)
+            # With a jerk limit alpha is piecewise LINEAR and continuous, so the
+            # midpoint is the correct representative value over the interval --
+            # unlike the old jerk-free trapezoid, where alpha stepped and the
+            # start-of-interval value was the only honest choice. The sampler
+            # puts every jerk breakpoint on a sample, so no interval straddles
+            # a slope change and this average is exact.
+            al = 0.5 * (al0 + al1)
             tau = (J_total * al
                    + self.load.gravity_torque(th)
                    + self.load.external_torque)
@@ -498,6 +667,41 @@ class Joint:
                 tau += math.copysign(self.load.joint_friction, om)
             segs.append((dt, tau, om))
         return segs
+
+    def motion_phases(self) -> List[str]:
+        """
+        Phase tag per segment of required_torque_profile(), aligned 1:1 with it.
+
+        Trapezoidal profiles only: an explicit duty_segments list carries no
+        trajectory to classify, so the caller gets an empty list and should fall
+        back to a single unlabelled series.
+        """
+        if self.duty_segments is not None or self.profile is None:
+            return []
+        traj = self.profile.trajectory()
+        al_pk = max((abs(a) for _, _, _, a in traj), default=0.0)
+        out = []
+        for i in range(1, len(traj)):
+            t0, _, om0, al0 = traj[i - 1]
+            t1, _, om1, al1 = traj[i]
+            if t1 - t0 <= 0:
+                continue
+            om = 0.5 * (om0 + om1)
+            al = 0.5 * (al0 + al1)
+            if abs(om) < 1e-9 and abs(al) < 1e-9:
+                out.append("Dwell")             # stationary, the dwell_time rest
+            elif abs(al) < 1e-9:
+                out.append("Cruise")            # constant velocity, v-limited
+            else:
+                # Accel and decel are split because they, not the direction of
+                # travel, are what separate the torque bands whenever inertia
+                # dominates gravity: J*alpha reverses sign between them while
+                # the gravity term only tracks angle. alpha*omega > 0 is
+                # speeding up, whichever way the joint is going.
+                direction = "Pos" if om > 0 else "Neg"
+                sense = "Accel" if al * om > 0 else "Decel"
+                out.append(f"Move_{direction}_{sense}")
+        return out
 
     def actuator_output_demand(self, tau_joint: float, omega_joint: float
                                ) -> Tuple[float, float]:

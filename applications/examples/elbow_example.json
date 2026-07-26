@@ -5,13 +5,15 @@
 
   "_UNITS": [
     "Every physical value may be written three ways:",
-    "  1. explicit object   \"com_distance\": {\"value\": 11, \"units\": \"in\"}   <- preferred",
-    "  2. suffixed name     \"com_distance_mm\": 280",
-    "  3. bare number       \"com_distance\": 0.28   -> canonical SI assumed, and",
+    "  1. explicit object   \"distance_joint_axis_to_CG\": {\"value\": 11, \"units\": \"in\"}   <- preferred",
+    "  2. suffixed name     \"distance_joint_axis_to_CG_mm\": 280",
+    "  3. bare number       \"distance_joint_axis_to_CG\": 0.28   -> canonical SI assumed, and",
     "                        flagged in the report's UNIT AUDIT",
     "A unit from the wrong dimension (e.g. kg for a length) is always a hard error.",
     "Set \"strict_units\": true below to reject form 3 outright.",
     "Canonical units: mass kg, length m, inertia kg.m^2, angle rad, time s,",
+    "EXCEPT joint angles (stroke_start, stroke_end, gravity_angle), where a bare",
+    "number is read as DEGREES -- nobody writes 90 meaning 90 radians.",
     "torque N.m, angular velocity rad/s, temperature degC."
   ],
   "strict_units": false,
@@ -23,22 +25,35 @@
   "ratio_type": "direct",
 
   "load": {
-    "payload_mass":    {"value": 1.5,  "units": "kg"},
-    "com_distance":    {"value": 280,  "units": "mm"},
-    "link_inertia":    {"value": 350,  "units": "kg.cm^2"},
-    "gravity_factor":  {"value": 1.0,  "units": "-",
-                        "note": "1 = axis horizontal, link swings against full gravity; 0 = vertical axis"},
-    "gravity_phase":   {"value": 0,    "units": "deg"},
-    "external_torque": {"value": 0,    "units": "N.m"},
-    "joint_friction":  {"value": 0.15, "units": "N.m"}
+    "total_mass_at_CG":            {"value": 1.5,  "units": "kg",
+                         "note": "whole moving assembly: link, bracket, hardware and anything carried"},
+    "distance_joint_axis_to_CG":   {"value": 280,  "units": "mm",
+                         "note": "joint axis to the CG. Counts linearly for gravity and SQUARED for inertia"},
+    "moment_of_inertia_around_CG": {"value": 350,  "units": "kg.cm^2",
+                         "note": "about the CG, NOT about the joint axis -- the parallel-axis transfer m*d^2 is added for you. Take this straight from CAD"},
+    "joint_plane_tilt": {"value": 0,    "units": "deg",
+                         "note": "side-side tilt of the plane (perpendicular to rotation axis) of this joint relative to gravity. 0 = plane is vertical so gravity acts fully; 90 = plane is horizontal (axis vertical) so gravity never loads the joint"},
+    "gravity_angle":    {"value": -90,  "units": "deg",
+                         "note": "joint angle at which the CG points straight DOWN, along the gravity vector. Torque is zero there and peaks 90 deg away. Same frame as profile.stroke_start"},
+    "external_torque":  {"value": 0,    "units": "N.m"},
+    "joint_friction":   {"value": 0.15, "units": "N.m"}
   },
 
   "profile": {
-    "stroke":         {"value": 90,   "units": "deg"},
-    "move_time":      {"value": 450,  "units": "ms"},
-    "dwell_time":     {"value": 0.35, "units": "s"},
-    "accel_fraction": {"value": 0.25, "units": "-"},
-    "theta_start":    {"value": -45,  "units": "deg"},
+    "stroke_start":   {"value": -45,  "units": "deg",
+                       "note": "joint angle at one end of the travel, same frame as load.gravity_angle"},
+    "stroke_end":     {"value": 45,   "units": "deg",
+                       "note": "the other end. The move runs start -> end -> start, repeating"},
+    "max_velocity":   {"value": 260,  "units": "rpm",
+                       "note": "joint speed ceiling enforced by the motion controller. If the stroke is long enough to reach it, the move is 'velocity-limited' and gets a constant-speed Cruise phase"},
+    "max_accel":      {"value": 40,   "units": "rad/s^2",
+                       "note": "acceleration ceiling. This is KINEMATIC, not a torque limit: the torque needed to achieve it is J_total*max_accel and is computed for you, which is exactly what the Trajectory following check tests"},
+    "max_jerk":       {"value": 800,  "units": "rad/s^3",
+                       "note": "rate of change of acceleration, so the S-curve has no instantaneous torque steps. Lower = gentler on the drivetrain but a slower move; a short stroke may be 'jerk-limited', never reaching max_accel at all"},
+    "dwell_time":     {"value": 0.35, "units": "s",
+                       "note": "rest at each end, after arriving and before the return. Shown as Dwell on chart 1. Speed is zero but a gravity-loaded joint still draws holding current, so this is rest, not free. Full cycle = 2*(solved move_time + dwell_time)"},
+    "_solved_note": "There is deliberately NO move_time or accel_fraction here. The trajectory is the fastest move that respects all three limits above, so the move time is SOLVED and reported (see COMMANDED MOTION in the report) rather than prescribed. The move is always bound by at least one limit; the report names which. Chart 1 legend: Move_*_Accel / Cruise / Move_*_Decel / Dwell.",
+    "_samples_note": "Resolution of the time discretisation, per traverse. Higher = more, finer segments, so more dots on chart 1 and a slightly more accurate RMS -- but it does NOT change the motion. Floor of 28; 160 is plenty. Dwell stays at 2 points however high this goes, because a dwell is one constant segment per end.",
     "samples": 160
   },
 

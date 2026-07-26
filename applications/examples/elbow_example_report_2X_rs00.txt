@@ -20,24 +20,34 @@ JOINT CAPABILITY (all n actuators, at the joint)
 
 DUTY CYCLE (per actuator, at its output shaft)
   cycle period          : 1.60 s
-  peak torque demand    :     5.01 N.m
-  RMS current           :     1.67 A_rms
-  peak speed            :       44 rpm
+  peak torque demand    :     5.10 N.m
+  RMS current           :     1.79 A_rms
+  peak speed            :       67 rpm
+
+COMMANDED MOTION (solved from the controller's limits)
+  stroke                :     90.0 deg  (-45.0 -> 45.0)
+  move time (solved)    :      449 ms per traverse   <- accel-limited
+  dwell at each end     :      350 ms
+  peak velocity         :     66.7 rpm (limit 260.0, below)
+  peak acceleration     :     40.0 rad/s^2 (limit 40.0, AT LIMIT)
+  jerk                  :    800.0 rad/s^3 (always at limit during transitions)
 
 CRITERIA
         criterion                    demand  capability  margin  confidence
   --------------------------------------------------------------------------
-  PASS  Peak torque                      10        27.9   2.79x  derived
+  PASS  Peak torque                    10.2        27.9   2.74x  derived
         2 x 13.97 N.m at actuator output, x1.00 joint ratio
-  PASS  Speed at load                  4.65        34.9   7.49x  guess
-        needs 44 rpm at 4.89 N.m/act; bus 52 V, no-load 368 rpm at output
-  PASS  Torque-speed envelope          5.01          14   2.79x  estimated
-        tightest point: 5.01 N.m at 41 rpm (actuator output)
-  PASS  Thermal (winding)              23.2          80   3.45x  estimated
-        peak winding 63 degC, case 55 degC, limit 120 degC at 40 degC ambient; mean loss 5.1 W/actuator
-  PASS  Continuous torque (RMS)        2.46        3.83   1.56x  estimated
-        duty RMS current 1.67 A_rms vs continuous limit 2.96 A_rms
-  PASS  Drive current limit            3.44          11   3.19x  derived
+  PASS  Speed at load                  6.98        35.9   5.14x  guess
+        needs 67 rpm at 3.65 N.m/act; bus 52 V, no-load 368 rpm at output
+  PASS  Torque-speed envelope           5.1          14   2.74x  estimated
+        tightest point: 5.10 N.m at 56 rpm (actuator output)
+  PASS  Trajectory following            5.1          14   2.74x  estimated
+        accel-limited move, solved 449 ms per traverse; tightest during Move_Pos_Accel: needs 5.10 N.m at 56 rpm, envelope gives 13.97 N.m
+  PASS  Thermal (winding)              27.1          80   2.95x  estimated
+        peak winding 67 degC, case 58 degC, limit 120 degC at 40 degC ambient; mean loss 5.9 W/actuator
+  PASS  Continuous torque (RMS)        2.64        3.83   1.45x  estimated
+        duty RMS current 1.79 A_rms vs continuous limit 2.96 A_rms
+  PASS  Drive current limit             3.5          11   3.13x  derived
         peak phase current demanded by the duty cycle vs the drive's rating
   PASS  Inertia ratio (fyi)           0.153     0.00185   0.01x  estimated
         reflected/load = 0.012 (reflected 1.85 g.m^2, load 152.60 g.m^2); rotor inertia is small next to the load (good for a QDD joint)
@@ -45,19 +55,19 @@ CRITERIA
         2 x 310 g = 620 g
   PASS  Bus voltage                      52          60   1.00x  vendor
         52.0 V from the application; actuator accepts 24-60 V, +8% vs the 48 V nominal
-  FAIL  Surface temp (safety)          15.5           8   0.52x  estimated
-        housing settles at 55 degC vs a 48 degC touch limit (40 degC ambient). Lumped housing temperature: real surfaces have hot spots near the stator, so treat this as optimistic and verify by measurement.
-  PASS  Backdrive torque              0.222           1   4.51x  estimated
-        est. 0.22 N.m to backdrive at the joint; target under 1.00 N.m (10% of peak)
+  FAIL  Surface temp (safety)            18           8   0.44x  estimated
+        housing settles at 58 degC vs a 48 degC touch limit (40 degC ambient). Lumped housing temperature: real surfaces have hot spots near the stator, so treat this as optimistic and verify by measurement.
+  PASS  Backdrive torque              0.222        1.02   4.59x  estimated
+        est. 0.22 N.m to backdrive at the joint; target under 1.02 N.m (10% of peak)
   --------------------------------------------------------------------------
 
-  VERDICT: FAIL    (binding constraint: Surface temp (safety), margin 0.52x)
+  VERDICT: FAIL    (binding constraint: Surface temp (safety), margin 0.44x)
 
 THERMAL DETAIL (per actuator)
-  peak winding temp     :   63.2 degC (limit 120)
-  settled winding temp  :   63.1 degC
-  settled case temp     :   55.5 degC
-  mean heat dissipation :   5.10 W
+  peak winding temp     :   67.1 degC (limit 120)
+  settled winding temp  :   66.9 degC
+  settled case temp     :   58.0 degC
+  mean heat dissipation :   5.94 W
   time constants        : winding 27 s, case 720 s
   duty cycles simulated : 3  (converged)
 
@@ -76,23 +86,24 @@ UNIT AUDIT  (as written in the input files -> canonical SI)
      Ke                 =    0.0907183 V_rms_LL/(rad/s) <- 9.5 Vrms/kRPM (from field name)
      I_cont_peak_amp    =          4.7 A_pk           <- 4.7 A_pk
      I_peak_peak_amp    =         15.5 A_pk           <- 15.5 A_pk
-     ratio             =            1 -              <- 1.0 -
-     mass_budget       =          0.8 kg             <- 800 g
-     T_ambient         =           40 degC           <- 40 degC
-     bus_voltage       =           52 V              <- 52 V
-     max_surface_temp  =           48 degC           <- 48 degC
-     payload_mass      =          1.5 kg             <- 1.5 kg
-     com_distance      =         0.28 m              <- 280 mm
-     link_inertia      =        0.035 kg.m^2         <- 350 kg.cm^2
-     gravity_factor    =            1 -              <- 1.0 -
-     gravity_phase     =            0 rad            <- 0 deg
-     external_torque   =            0 N.m            <- 0 N.m
-     joint_friction    =         0.15 N.m            <- 0.15 N.m
-     stroke            =       1.5708 rad            <- 90 deg
-     move_time         =         0.45 s              <- 450 ms
-     dwell_time        =         0.35 s              <- 0.35 s
-     accel_fraction    =         0.25 -              <- 0.25 -
-     theta_start       =    -0.785398 rad            <- -45 deg
+     ratio                        =            1 -              <- 1.0 -
+     mass_budget                  =          0.8 kg             <- 800 g
+     T_ambient                    =           40 degC           <- 40 degC
+     bus_voltage                  =           52 V              <- 52 V
+     max_surface_temp             =           48 degC           <- 48 degC
+     total_mass_at_CG             =          1.5 kg             <- 1.5 kg
+     distance_joint_axis_to_CG    =         0.28 m              <- 280 mm
+     moment_of_inertia_around_CG  =        0.035 kg.m^2         <- 350 kg.cm^2
+     joint_plane_tilt             =            0 rad            <- 0 deg
+     gravity_angle                =      -1.5708 rad            <- -90 deg
+     external_torque              =            0 N.m            <- 0 N.m
+     joint_friction               =         0.15 N.m            <- 0.15 N.m
+     stroke_start                 =    -0.785398 rad            <- -45 deg
+     stroke_end                   =     0.785398 rad            <- 45 deg
+     max_velocity                 =      27.2271 rad/s          <- 260 rpm
+     max_accel                    =           40 rad/s^2        <- 40 rad/s^2
+     max_jerk                     =          800 rad/s^3        <- 800 rad/s^3
+     dwell_time                   =         0.35 s              <- 0.35 s
 
 ASSUMED PARAMETERS  (defaults, not vendor data)
   - C_c = 237.15 J/K  (estimated, +/-40%)  # remaining mass as aluminium, c=900 J/kgK
@@ -107,14 +118,9 @@ ASSUMED PARAMETERS  (defaults, not vendor data)
   - iron_loss_ref_W = 4.06206 W  (estimated, +/-70%)  # iron loss at rated speed taken as 25% of rated copper loss
   - viscous_rotor = 1e-05 N.m/(rad/s)  (guess, +/-100%)
 
-SENSITIVITY  --  assumptions that change a verdict within their error band
-  Rth_ca:
-      Surface temp (safety): FAIL -> MARGINAL at Rth_ca x0.50
-
-  MEASURE THESE FIRST: Rth_ca
+SENSITIVITY: no assumed parameter flips a verdict within its error
+  band. The result is robust to the guesses that were made.
 
 VENDOR DATA CROSS-CHECK
   rated torque: model 4.85 N.m vs spec 5.00 N.m (-3%)
   peak torque:  model 13.97 N.m vs spec 14.00 N.m (-0%)
-
-charts written to /mnt/user-data/outputs/charts_2x_RS00_elbow.html
