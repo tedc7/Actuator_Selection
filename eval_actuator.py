@@ -17,11 +17,71 @@ report (it always goes to stdout as well), --charts for the HTML charts, and
 from __future__ import annotations
 import argparse
 import copy
+import hashlib
 import os
 import sys
 
 from actuator_eval import db, evaluate, report, charts
 from actuator_eval.params import P, VENDOR_MEASURED
+
+
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _check_datasheets() -> int:
+    """
+    Verify each db entry against the datasheet it claims to be based on.
+
+    Vendors reissue manuals in place, keeping the same title and often the same
+    stated version, so a filename is not an identity. The sha256 recorded in the
+    entry is, which makes 'the vendor changed this document underneath us' a
+    detectable event rather than a silent one.
+
+    Exit status is non-zero if any entry is stale or unverifiable, so this can
+    gate CI.
+    """
+    ds_dir = os.path.join(os.path.dirname(db.ACTUATOR_DIR), "datasheets")
+    worst = 0
+    for name in db.list_actuators():
+        act = db.load_actuator(name)
+        d = act.datasheet or {}
+        if not d:
+            print(f"  {name:16s} NO DATASHEET DECLARED")
+            worst = max(worst, 1)
+            continue
+
+        recorded = d.get("sha256")
+        fname = d.get("file")
+        label = act.datasheet_id() or "(unnamed document)"
+        if not fname or not recorded:
+            print(f"  {name:16s} INCOMPLETE   {label}")
+            print(f"  {'':16s}              declares no {'file' if not fname else 'sha256'}")
+            worst = max(worst, 1)
+            continue
+
+        path = os.path.join(ds_dir, fname)
+        if not os.path.exists(path):
+            # Not an error: the PDFs are deliberately not distributed.
+            print(f"  {name:16s} NOT LOCAL    {label}")
+            print(f"  {'':16s}              {fname} absent; fetch it to verify")
+            continue
+
+        actual = _sha256(path)
+        if actual == recorded:
+            print(f"  {name:16s} OK           {label}")
+        else:
+            print(f"  {name:16s} MISMATCH     {label}")
+            print(f"  {'':16s}              recorded {recorded[:16]}...")
+            print(f"  {'':16s}              on disk  {actual[:16]}...")
+            print(f"  {'':16s}              the vendor document has changed; "
+                  "re-check the entry against it")
+            worst = 2
+    return worst
 
 
 def _actuator_slug(act) -> str:
@@ -32,10 +92,22 @@ def _actuator_slug(act) -> str:
 
 
 def _out_path(joint, act, outdir, suffix, ext):
-    """Default output path: beside the application file unless overridden."""
+    """
+    Default output path: beside the application file unless overridden.
+
+    Named application-first then actuator -- 'middle_joint_robstride_00.html' --
+    so results for one application sort together and the pair that produced them
+    is readable off the filename. Both slugs prefer the source FILENAME and fall
+    back to the internal 'name' field for objects built in code. Any qualifier
+    (an actuator count, or 'report') is appended after that stem rather than
+    buried in the middle, so the leading application_actuator part is stable.
+    """
     base = outdir or joint.output_dir()
     os.makedirs(base, exist_ok=True)
-    return os.path.join(base, f"{joint.slug()}_{suffix}_{_actuator_slug(act)}{ext}")
+    stem = f"{joint.slug()}_{_actuator_slug(act)}"
+    if suffix:
+        stem = f"{stem}_{suffix}"
+    return os.path.join(base, f"{stem}{ext}")
 
 
 def main(argv=None):
@@ -56,6 +128,8 @@ def main(argv=None):
     ap.add_argument("--mounting", default=None,
                     help="free_air | bolted_plastic | bolted_metal | heatsunk")
     ap.add_argument("--list", action="store_true", help="list the database and exit")
+    ap.add_argument("--check-datasheets", action="store_true",
+                    help="verify each db entry against the datasheet it cites, and exit")
     ap.add_argument("--brief", action="store_true", help="omit per-criterion detail lines")
     ap.add_argument("--save", action="store_true",
                     help="also write the text report beside the application file")
@@ -78,6 +152,14 @@ def main(argv=None):
         for name, kind in apps:
             print(f"     {name}" + ("  (example)" if kind == "example" else ""))
         return 0
+
+    if args.check_datasheets:
+        print("datasheet provenance:")
+        rc = _check_datasheets()
+        if rc:
+            print("\nre-check any MISMATCH entry against the new document "
+                  "before trusting its numbers.")
+        return rc
 
     if not args.actuator or not args.joint:
         ap.error("need both --actuator and --joint (or use --list)")
@@ -139,7 +221,7 @@ def main(argv=None):
                     out = f"{base}_{e.joint.n_actuators}x{ext or '.html'}"
                 else:
                     out = _out_path(joint, act, args.outdir,
-                                    f"charts_{e.joint.n_actuators}x", ".html")
+                                    f"{e.joint.n_actuators}x", ".html")
                 charts.write_html(e, out, t)
                 print(f"charts for {e.joint.n_actuators}x written to {out}")
     else:
@@ -154,7 +236,7 @@ def main(argv=None):
             print(f"report written to {out}")
         if want_charts:
             out = charts_path or _out_path(joint, act, args.outdir,
-                                           f"charts_{joint.n_actuators}x", ".html")
+                                           "", ".html")
             charts.write_html(ev, out, text)
             print(f"charts written to {out}")
     return 0

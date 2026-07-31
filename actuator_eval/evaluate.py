@@ -213,6 +213,25 @@ def evaluate(act: Actuator, joint: Joint, run_sensitivity: bool = True) -> Evalu
         ev.extras["peak_velocity_cmd"] = prof.peak_velocity
         ev.extras["peak_accel_cmd"] = prof.peak_accel
 
+        # Inertial torque implied by the commanded acceleration, for controllers
+        # that limit TORQUE rather than acceleration: set the controller's cap to
+        # this and the two limits describe the same move. J_total carries the
+        # reflected rotor inertia of the units actually fitted, so this is
+        # per-candidate, not a property of the application alone -- both parts
+        # are reported so the load-only term can be read off directly.
+        total_ratio = float(act.gear_ratio) * float(joint.ratio)
+        j_refl = joint.n_actuators * float(act.J_rotor) * total_ratio ** 2
+        j_load = joint.load.inertia_total()
+        ev.extras["J_load_joint"] = j_load
+        ev.extras["J_reflected_joint"] = j_refl
+        tau_in_joint = (j_load + j_refl) * prof.peak_accel
+        ev.extras["tau_inertial_cmd"] = tau_in_joint
+        # Referred to one actuator's output shaft. Accelerating is always the
+        # motoring case, so efficiency ADDS to the demand -- the sign-dependent
+        # branch in actuator_output_demand() has no ambiguity to resolve here.
+        ev.extras["tau_inertial_cmd_per_actuator"] = tau_in_joint / (
+            n * float(joint.ratio) * max(float(joint.ratio_eff), 1e-9))
+
     # ---- 4. thermal (the one that usually decides it) ---------------------
     th = phys.simulate_duty(act, segs, joint.T_ambient)
     ev.thermal = th

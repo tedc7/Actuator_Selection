@@ -1,0 +1,135 @@
+{
+  "name": "RobStride 01",
+  "vendor": "RobStride Dynamics",
+  "url": "https://www.robstride.com/products/robStride01",
+  "_comment_source": "All figures from the RobStride RS01 User Manual (rev 260713), sections 1.2-1.4 and 2.1. Phase resistance, inductance, rotor inertia and the thermal network are NOT published and are estimated by the tool - see the ASSUMED PARAMETERS section of any report.",
+  "datasheet": {
+    "title": "RobStride RS01 User Manual",
+    "revision": "260713",
+    "version": "1.0",
+    "date": "2025-11-25",
+    "file": "robstride_01.pdf",
+    "sha256": "36d14711d7835a335d14b6c8e8e8da4666207f0e2f981dd9959cfde457ab6123",
+    "retrieved": "2026-07-29",
+    "_note": "revision is the vendor's filename stamp; version/date are from the manual's own section 7 Version History. The vendor's version field is inert: the 260713 revision STILL declares v1.0 dated 2025-11-25, seven months and several real spec changes after the 251210 revision did. The sha256 is the only reliable identity - verify with 'eval_actuator.py --check-datasheets'."
+  },
+  "entry_revision": "2026-07-29",
+  "mass": {
+    "value": 380,
+    "units": "g",
+    "source": "vendor",
+    "tol": 0.01,
+    "note": "manual 1.4: 380g +/-3g"
+  },
+  "dims_mm": [63, 63, 28],
+  "gear_ratio": {"value": 7.75, "units": "-", "source": "vendor", "tol": 0.0},
+  "gear_type": "planetary_1stage",
+  "gear_eff": {
+    "value": 0.94,
+    "units": "-",
+    "source": "estimated",
+    "tol": 0.06,
+    "note": "back-solving vendor Kt_out=1.22 against Ke=9.6 gives 0.99, which is not credible for a 7.75:1 planetary. Both Kt and Ke are quoted to 2 s.f., so the back-solve is degenerate here; class default retained instead. See notes."
+  },
+  "pole_pairs": 14,
+  "Ke_Vrms_per_kRPM": {
+    "value": 9.6,
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "manual 1.3.10 'motor back potential', line-to-line RMS per 1000 rotor rpm"
+  },
+  "I_cont_peak_amp": {
+    "value": 7.0,
+    "units": "A_pk",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "manual 1.3.5 'rated load phase current (peak)'"
+  },
+  "I_peak_peak_amp": {
+    "value": 23.0,
+    "units": "A_pk",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "manual 1.3.7 'maximum load phase current (peak)'"
+  },
+  "kt_sat_derate": {
+    "value": 0.857,
+    "units": "-",
+    "source": "derived",
+    "tol": 0.08,
+    "note": "17 N.m actual peak vs 19.8 N.m linear extrapolation of Kt at 23 Apk"
+  },
+  "V_bus_nom": {
+    "value": 36.0,
+    "units": "V",
+    "source": "vendor",
+    "tol": 0.0,
+    "note": "RS01 is rated at 36 V, NOT 48 V like the rest of the family"
+  },
+  "V_bus_min": {"value": 24.0, "units": "V", "source": "vendor", "tol": 0.0},
+  "V_bus_max": {"value": 50.0, "units": "V", "source": "vendor", "tol": 0.0},
+  "tau_cont_out_spec": {
+    "value": 6.0,
+    "units": "N.m",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "manual 1.2.3 'rated load (CW)'; ambient and mounting unspecified"
+  },
+  "tau_peak_out_spec": {"value": 17.0, "units": "N.m", "source": "vendor", "tol": 0.1},
+  "T_winding_max": {
+    "value": 135.0,
+    "units": "degC",
+    "source": "vendor",
+    "tol": 0.05,
+    "note": "260713 revision states 135 degC (actual insulation limit 180 degC). The 251210 revision had this and the RS02 the other way round; the newer revision is taken as the corrected one - a value that swaps between revisions is most likely an erratum that was caught and fixed."
+  },
+  "notes": [
+    "Vendor rated torque of 6 N.m is quoted with no stated ambient temperature or mounting condition, so it cannot be taken as a continuous rating in an enclosed robot arm. This tool computes the continuous limit from the thermal model instead.",
+    "The RS01 and RS02 are the same motor with different bus ratings: identical mass, dimensions, gear ratio, Ke, currents and torques. The RS02 is rated 48 V and reaches 410 rpm no-load; the RS01 is rated 36 V and reaches 315 rpm. Prefer the RS02 entry if your bus is 48 V.",
+    "gear_eff is a class default, not a back-solve. Kt_out (1.22) and Ke (9.6) are each given to 2 s.f., and back-solving one against the other implies 99% efficiency - inside the rounding band but not physically credible. Treat torque-per-amp predictions as +/-6%.",
+    "Datasheet no-load speed of 315 rpm at 36 V corresponds to 2441 rotor rpm, about 92% of the line-to-line RMS the bus can supply - consistent with the quoted Ke.",
+    "Dual 14-bit magnetic encoders, 1 Mbps CAN, FOC drive integrated. Class B insulation, -20 to 50 degC ambient, no-load current 0.5 Arms.",
+    "Housing is 63 mm dia x 28 mm per the 1.1 outline drawing. The 'Dimensions: 58mm' in the 2.1 driver table refers to the control board, not the actuator.",
+    "260713 revision adds the rated-load test setup: aluminium-alloy heat sink, 260 x 280 mm, rated load measured at 100 rpm output. The earlier 251210 revision left mounting entirely unqualified. A heat sink that size is a bench fixture, not a robot joint, so the vendor rated torque still should not be read as a continuous rating in an enclosed arm.",
+    "Vendor overload endurance (ROTATING and STALLED) is now carried as structured data in overload_curves below. NOTE the rotating table is byte-identical to the RS02's and is treated as a shared observation, not an independent one.",
+    "Stall is the case to watch for holding-torque duty: the manual states single-phase heating under stall is 1.414x that when rotating, because the three phases heat unevenly with the rotor stationary. The two-node thermal model assumes even heating and so reads optimistic against the stall table by construction - the report says so.",
+    "These endurance figures superseded the 251210 numbers, which differed materially (RS00 at 14 N.m: 5 s then, 3 s now). Any thermal-model fit should use the 260713 values."
+  ],
+  "tn_curve": {
+    "source": "unavailable",
+    "note": "No T-N curve is recorded for the RS01. Its manual prints one, but the plot spans 200-410 rpm and ends exactly at the RS02's 410 rpm no-load speed, 30% past the RS01's own 315 rpm at 36 V - so the curve was measured on the 48 V RS02 and pasted into both manuals. The RS01 appears to be the original part and the RS02 the later higher-voltage derivative, which is consistent with the newer measurement being reused backwards. The tool falls back to its computed envelope here."
+  },
+  "overload_curves": [
+    {
+      "condition": "rotating",
+      "source": "vendor",
+      "speed_rpm_output": 100.0,
+      "ambient_C": 25.0,
+      "mounting": "heatsunk",
+      "rated_torque": 7.0,
+      "torque_units": "N.m",
+      "time_units": "s",
+      "tol": 0.20,
+      "note": "260713 manual overload endurance, rotating. CAUTION: this table is byte-identical to the RS02's, and the two manuals are known to share content (the RS01's printed T-N curve is the RS02's, and their winding limits were swapped between revisions). The RS01 is a 36 V part and the RS02 a 48 V part, so identical endurance at identical torques is plausible only if the table was measured once and reused. Treated as one observation shared with the RS02, not an independent one; tol widened to 0.20 accordingly. Their STALL tables do differ, which is itself evidence this rotating one was copied.",
+      "points": [
+        [17, 10], [16, 14], [15, 18], [14, 29], [13, 42], [12, 71], [11, 165],
+        [10, 250], [9, 838]
+      ]
+    },
+    {
+      "condition": "stalled",
+      "source": "vendor",
+      "speed_rpm_output": 0.0,
+      "ambient_C": 25.0,
+      "mounting": "heatsunk",
+      "rated_torque": 6.0,
+      "torque_units": "N.m",
+      "time_units": "s",
+      "tol": 0.15,
+      "note": "260713 manual overload endurance, stalled. Differs from the RS02's stall table, unlike the rotating one, so this appears to be genuinely the RS01's own measurement. Single-phase heating under stall is 1.414x rotating; the two-node model assumes even three-phase heating and will read optimistic here by construction.",
+      "points": [
+        [17, 6], [15, 14], [13, 25], [11, 44], [9, 300]
+      ]
+    }
+  ]
+}

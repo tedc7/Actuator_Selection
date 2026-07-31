@@ -3,42 +3,116 @@
   "vendor": "RobStride Dynamics",
   "url": "https://www.robstride.com/products/robStride00",
   "price_usd": 125,
-
   "_comment_source": "Electrical/mechanical figures from the published RobStride 00 datasheet table. Phase resistance, inductance and all thermal parameters are NOT published and are estimated by the tool - see the ASSUMED PARAMETERS section of any report.",
-
-  "mass":       {"value": 0.310, "units": "kg",  "source": "vendor", "tol": 0.03},
-  "dims_mm":    [57, 57, 51],
-  "gear_ratio": {"value": 10.0,  "units": "-",   "source": "vendor", "tol": 0.0},
-  "gear_type":  "planetary_1stage",
-  "gear_eff":   {"value": 0.94,  "units": "-",   "source": "derived", "tol": 0.05,
-                 "note": "back-solved from vendor Kt_out=1.48 Nm/Arms against Ke=9.5 Vrms/kRPM"},
+  "datasheet": {
+    "title": "RobStride RS00 User Manual",
+    "revision": "260713",
+    "version": "1.0",
+    "date": "2025-11-25",
+    "file": "robstride_00.pdf",
+    "sha256": "47d0ae5c909df2d989b0485c870d36900b9e17c72e608efeb3e13b6e98953832",
+    "retrieved": "2026-07-29",
+    "_note": "revision is the vendor's filename stamp; version/date are from the manual's own section 7 Version History. The vendor's version field is inert: the 260713 revision STILL declares v1.0 dated 2025-11-25, seven months and several real spec changes after the 251210 revision did. The sha256 is the only reliable identity - verify with 'eval_actuator.py --check-datasheets'."
+  },
+  "entry_revision": "2026-07-29",
+  "mass": {"value": 0.31, "units": "kg", "source": "vendor", "tol": 0.03},
+  "dims_mm": [57, 57, 51],
+  "gear_ratio": {"value": 10.0, "units": "-", "source": "vendor", "tol": 0.0},
+  "gear_type": "planetary_1stage",
+  "gear_eff": {
+    "value": 0.94,
+    "units": "-",
+    "source": "derived",
+    "tol": 0.05,
+    "note": "back-solved from vendor Kt_out=1.48 Nm/Arms against Ke=9.5 Vrms/kRPM"
+  },
   "pole_pairs": 14,
-
-  "Ke_Vrms_per_kRPM": {"value": 9.5, "source": "vendor", "tol": 0.10,
-                       "note": "datasheet back-EMF, line-to-line RMS per 1000 rotor rpm"},
-
-  "I_cont_peak_amp": {"value": 4.7,  "units": "A_pk", "source": "vendor", "tol": 0.10,
-                      "note": "datasheet 'rated load phase current (peak)'"},
-  "I_peak_peak_amp": {"value": 15.5, "units": "A_pk", "source": "vendor", "tol": 0.10,
-                      "note": "datasheet 'max load phase current (peak)'"},
-
-  "kt_sat_derate": {"value": 0.863, "units": "-", "source": "derived", "tol": 0.08,
-                    "note": "14 Nm actual peak vs 16.2 Nm linear extrapolation of Kt"},
-
+  "Ke_Vrms_per_kRPM": {
+    "value": 9.5,
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "datasheet back-EMF, line-to-line RMS per 1000 rotor rpm"
+  },
+  "I_cont_peak_amp": {
+    "value": 4.7,
+    "units": "A_pk",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "datasheet 'rated load phase current (peak)'"
+  },
+  "I_peak_peak_amp": {
+    "value": 15.5,
+    "units": "A_pk",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "datasheet 'max load phase current (peak)'"
+  },
+  "kt_sat_derate": {
+    "value": 0.863,
+    "units": "-",
+    "source": "derived",
+    "tol": 0.08,
+    "note": "14 Nm actual peak vs 16.2 Nm linear extrapolation of Kt"
+  },
   "V_bus_nom": {"value": 48.0, "units": "V", "source": "vendor", "tol": 0.0},
   "V_bus_min": {"value": 24.0, "units": "V", "source": "vendor", "tol": 0.0},
   "V_bus_max": {"value": 60.0, "units": "V", "source": "vendor", "tol": 0.0},
-
-  "tau_cont_out_spec": {"value": 5.0,  "units": "N.m", "source": "vendor", "tol": 0.10,
-                        "note": "vendor 'rated load'; ambient and mounting unspecified"},
-  "tau_peak_out_spec": {"value": 14.0, "units": "N.m", "source": "vendor", "tol": 0.10},
-
-  "T_winding_max": {"value": 120.0, "units": "degC", "source": "estimated", "tol": 0.12,
-                    "note": "Class B insulation (130 degC) less 10 degC design margin"},
-
+  "tau_cont_out_spec": {
+    "value": 5.0,
+    "units": "N.m",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "vendor 'rated load'; ambient and mounting unspecified"
+  },
+  "tau_peak_out_spec": {"value": 14.0, "units": "N.m", "source": "vendor", "tol": 0.1},
+  "T_winding_max": {
+    "value": 145.0,
+    "units": "degC",
+    "source": "vendor",
+    "tol": 0.05,
+    "note": "manual 1.3.13 states the overload test constrains the winding to 145 degC (actual insulation limit 180 degC). This is the vendor's own design constraint and supersedes the previous Class-B-minus-margin estimate of 120 degC."
+  },
   "notes": [
     "Vendor rated torque of 5 N.m is quoted with no stated ambient temperature or mounting condition, so it cannot be taken as a continuous rating in an enclosed robot arm. This tool computes the continuous limit from the thermal model instead.",
-    "Dual 14-bit magnetic encoders, 1 Mbps CAN, FOC drive integrated.",
-    "Operating ambient range -20 to 50 degC per datasheet."
-  ]
+    "Datasheet no-load speed of 315 rpm at 48 V corresponds to 3150 rotor rpm, about 88% of the line-to-line RMS the bus can supply - consistent with the quoted Ke.",
+    "Dual 14-bit magnetic encoders, 1 Mbps CAN, FOC drive integrated. No-load current 0.5 Arms, rated-load speed 260 rpm at the output.",
+    "Operating ambient range -20 to 50 degC per datasheet. Class B insulation. Control board is limited to 105 degC, which can bind before the winding does in a hot enclosure.",
+    "260713 revision adds the rated-load test setup: aluminium-alloy heat sink, 90 x 85 mm, rated load measured at 100 rpm output. The earlier 251210 revision left mounting entirely unqualified. A heat sink that size is a bench fixture, not a robot joint, so the vendor rated torque still should not be read as a continuous rating in an enclosed arm.",
+    "Vendor overload endurance (ROTATING, 100 rpm, 25 degC) is now carried as structured data in overload_curves below, where the tool cross-checks the thermal model against it. It reads about 4x OPTIMISTIC against this table - see that field's note.",
+    "The 260713 revision describes a separate stall overload curve (single-phase heating 1.414x rotating) but prints no stall table for this model.",
+    "These endurance figures superseded the 251210 numbers, which differed materially (RS00 at 14 N.m: 5 s then, 3 s now). Any thermal-model fit should use the 260713 values."
+  ],
+  "overload_curves": [
+    {
+      "condition": "rotating",
+      "source": "vendor",
+      "speed_rpm_output": 100.0,
+      "ambient_C": 25.0,
+      "mounting": "heatsunk",
+      "rated_torque": 5.0,
+      "torque_units": "N.m",
+      "time_units": "s",
+      "tol": 0.15,
+      "note": "260713 manual overload endurance, rotating. Captioned 'reduced heat sink size, lower rated torque', so the heat path is worse than the 90x85 mm fixture used for the rated-torque figure - and worse than any mounting this tool models. Superseded the 251210 table, which was materially more generous (14 N.m: 5 s then, 3 s now); a vendor revising endurance DOWN is revising toward reality. Winding held to 145 degC against 180 degC insulation, per 1.3.13. NOTE: this table implies roughly 2x the copper loss that this actuator's own published T-N curve implies, and no loss term in the model reconciles the two - see est_thermal_resistances() in models.py. The disagreement is the vendor's, and it is left visible.",
+      "points": [
+        [14, 3], [13, 7], [12, 10], [10, 20], [8, 53], [7, 94], [6, 285]
+      ]
+    }
+  ],
+  "tn_curve": {"source": "vendor", "bus_voltage": { "value": 48.0, "units": "V"},
+    "speed_units": "rpm_output",
+    "torque_units": "N.m",
+    "tol": 0.05,
+    "note": "digitised from the 260713 manual's T-N curve image (section 1.3, 48 V), read at gridline crossings; +/-1 minor division, so roughly +/-5% in torque and +/-10 rpm. Axes are labelled in this revision, unlike 251210.",
+    "points": [
+      [100, 14.0],
+      [150, 12.0],
+      [200, 9.5],
+      [230, 7.6],
+      [250, 6.4],
+      [275, 4.4],
+      [300, 2.0],
+      [315, 0.5]
+    ]
+  }
 }

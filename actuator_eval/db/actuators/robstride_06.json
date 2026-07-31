@@ -2,43 +2,135 @@
   "name": "RobStride 06",
   "vendor": "RobStride Dynamics",
   "url": "https://www.robstride.com/products/robStride06",
-
   "_comment_source": "Mechanical/electrical figures from the published RobStride 06 datasheet table. Phase resistance, inductance and all thermal parameters are NOT published and are estimated by the tool - see the ASSUMED PARAMETERS section of any report.",
-
-  "mass":       {"value": 621,  "units": "g",  "source": "vendor", "tol": 0.02},
-  "dims_mm":    [88, 88, 49],
-  "gear_ratio": {"value": 9.0,  "units": "-",  "source": "vendor", "tol": 0.0},
-  "gear_type":  "planetary_1stage",
-  "gear_eff":   {"value": 0.97, "units": "-",  "source": "derived", "tol": 0.06,
-                 "note": "back-solved from vendor Kt_out=1.1 Nm/Arms against Ke=7.6 Vrms/kRPM; Kt is only quoted to 2 s.f. so this is loosely bounded"},
+  "datasheet": {
+    "title": "RobStride RS06 User Manual",
+    "revision": "260713",
+    "version": "1.0",
+    "date": "2025-11-25",
+    "file": "robstride_06.pdf",
+    "sha256": "f2790b989d7aa3f1ecee321b0ca773db18f07a7b1da647b38cb714d361d32b2f",
+    "retrieved": "2026-07-29",
+    "_note": "revision is the vendor's filename stamp; version/date are from the manual's own section 7 Version History. The vendor's version field is inert: the 260713 revision STILL declares v1.0 dated 2025-11-25, seven months and several real spec changes after the 251210 revision did. The sha256 is the only reliable identity - verify with 'eval_actuator.py --check-datasheets'."
+  },
+  "entry_revision": "2026-07-29",
+  "mass": {"value": 621, "units": "g", "source": "vendor", "tol": 0.02},
+  "dims_mm": [88, 88, 49],
+  "gear_ratio": {"value": 9.0, "units": "-", "source": "vendor", "tol": 0.0},
+  "gear_type": "planetary_1stage",
+  "gear_eff": {
+    "value": 0.964,
+    "units": "-",
+    "source": "derived",
+    "tol": 0.06,
+    "note": "back-solved from vendor Kt_out=1.09 Nm/Arms against Ke=7.6 Vrms/kRPM. Kt is quoted to 3 s.f. in the manual (1.09, not the 1.1 previously assumed), but Ke is only 2 s.f., so this stays loosely bounded"
+  },
   "pole_pairs": 14,
-
-  "Ke_Vrms_per_kRPM": {"value": 7.6, "source": "vendor", "tol": 0.10,
-                       "note": "datasheet back-EMF, line-to-line RMS per 1000 rotor rpm"},
-
-  "I_cont_peak_amp": {"value": 14.3, "units": "A_pk", "source": "vendor", "tol": 0.10,
-                      "note": "datasheet 'rated load phase current'"},
-  "I_peak_peak_amp": {"value": 57.0, "units": "A_pk", "source": "vendor", "tol": 0.10,
-                      "note": "datasheet 'max load phase current' - needs a supply that can deliver it"},
-
-  "kt_sat_derate": {"value": 0.812, "units": "-", "source": "derived", "tol": 0.08,
-                    "note": "36 Nm actual peak vs 44.3 Nm linear extrapolation of Kt; saturates harder than the RS00"},
-
+  "Ke_Vrms_per_kRPM": {
+    "value": 7.6,
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "datasheet back-EMF, line-to-line RMS per 1000 rotor rpm"
+  },
+  "I_cont_peak_amp": {
+    "value": 14.3,
+    "units": "A_pk",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "datasheet 'rated load phase current'"
+  },
+  "I_peak_peak_amp": {
+    "value": 57.0,
+    "units": "A_pk",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "datasheet 'max load phase current' - needs a supply that can deliver it"
+  },
+  "kt_sat_derate": {
+    "value": 0.819,
+    "units": "-",
+    "source": "derived",
+    "tol": 0.08,
+    "note": "36 Nm actual peak vs 43.9 Nm linear extrapolation of Kt at 57 Apk; saturates harder than the RS00"
+  },
   "V_bus_nom": {"value": 48.0, "units": "V", "source": "vendor", "tol": 0.0},
   "V_bus_min": {"value": 15.0, "units": "V", "source": "vendor", "tol": 0.0},
   "V_bus_max": {"value": 60.0, "units": "V", "source": "vendor", "tol": 0.0},
-
-  "tau_cont_out_spec": {"value": 11.0, "units": "N.m", "source": "vendor", "tol": 0.10,
-                        "note": "vendor 'rated load'; ambient and mounting unspecified"},
-  "tau_peak_out_spec": {"value": 36.0, "units": "N.m", "source": "vendor", "tol": 0.10},
-
-  "T_winding_max": {"value": 120.0, "units": "degC", "source": "estimated", "tol": 0.12,
-                    "note": "Class B insulation (130 degC) less 10 degC design margin"},
-
+  "tau_cont_out_spec": {
+    "value": 11.0,
+    "units": "N.m",
+    "source": "vendor",
+    "tol": 0.1,
+    "note": "vendor 'rated load'; ambient and mounting unspecified"
+  },
+  "tau_peak_out_spec": {"value": 36.0, "units": "N.m", "source": "vendor", "tol": 0.1},
+  "T_winding_max": {
+    "value": 145.0,
+    "units": "degC",
+    "source": "vendor",
+    "tol": 0.05,
+    "note": "260713 revision states 145 degC (actual insulation limit 180 degC). The 251210 revision said 135 degC. This is the vendor's own design constraint, not a derived guess."
+  },
   "notes": [
     "Vendor rated torque of 11 N.m is quoted with no stated ambient temperature or mounting condition, so it cannot be taken as a continuous rating in an enclosed robot. This tool computes the continuous limit from the thermal model instead.",
     "Datasheet rated-load speed is only 100 rpm at the output, far below the 480 rpm no-load figure - the rated point is a thermal limit, not a voltage limit.",
     "Peak phase current of 57 Apk demands serious power delivery; check bus wiring and battery C-rating, not just the actuator.",
-    "Dual 14-bit magnetic encoders, 1 Mbps CAN, FOC drive integrated. Class B insulation, -20 to 50 degC ambient per datasheet."
-  ]
+    "Datasheet no-load speed of 480 rpm at 48 V corresponds to 4320 rotor rpm, about 97% of the line-to-line RMS the bus can supply - the RS06 runs closer to its voltage ceiling at no load than the rest of the family.",
+    "Dual 14-bit magnetic encoders, 1 Mbps CAN, FOC drive integrated. Class B insulation, -20 to 50 degC ambient, no-load current 0.98 Arms per datasheet.",
+    "Operating voltage floor is 15 V, notably lower than the 24 V of the RS00/RS01/RS02.",
+    "260713 revision adds the rated-load test setup: aluminium-alloy heat sink, 130 x 160 mm, rated load measured at 100 rpm output. The earlier 251210 revision left mounting entirely unqualified. A heat sink that size is a bench fixture, not a robot joint, so the vendor rated torque still should not be read as a continuous rating in an enclosed arm.",
+    "Vendor overload endurance (ROTATING and STALLED) is now carried as structured data in overload_curves below, where the tool cross-checks the thermal model against it.",
+    "Stall is the case to watch for holding-torque duty: the manual states single-phase heating under stall is 1.414x that when rotating, because the three phases heat unevenly with the rotor stationary. Note the stall table's rated endpoint is 8 N.m against 11 N.m rotating. The two-node thermal model assumes even heating and so reads optimistic against the stall table by construction - the report says so.",
+    "These endurance figures superseded the 251210 numbers, which differed materially (RS00 at 14 N.m: 5 s then, 3 s now). Any thermal-model fit should use the 260713 values."
+  ],
+  "overload_curves": [
+    {
+      "condition": "rotating",
+      "source": "vendor",
+      "speed_rpm_output": 100.0,
+      "ambient_C": 25.0,
+      "mounting": "heatsunk",
+      "rated_torque": 11.0,
+      "torque_units": "N.m",
+      "time_units": "s",
+      "tol": 0.15,
+      "note": "260713 manual overload endurance, rotating. Captioned 'reduced heat sink size, lower rated torque', so the heat path is worse than the 130x160 mm fixture used for the rated-torque figure.",
+      "points": [
+        [36, 5], [34, 6], [32, 8], [28, 11], [23, 21], [18, 70], [15, 280],
+        [13, 1360]
+      ]
+    },
+    {
+      "condition": "stalled",
+      "source": "vendor",
+      "speed_rpm_output": 0.0,
+      "ambient_C": 25.0,
+      "mounting": "heatsunk",
+      "rated_torque": 8.0,
+      "torque_units": "N.m",
+      "time_units": "s",
+      "tol": 0.15,
+      "note": "260713 manual overload endurance, stalled. The manual states single-phase heating under stall is 1.414x that when rotating, because the three phases heat unevenly with the rotor stationary. Note the rated endpoint drops to 8 N.m against 11 N.m rotating. Use this table for holding-torque duty. The two-node model assumes even three-phase heating, so it will read optimistic here by construction.",
+      "points": [
+        [36, 1], [30, 1], [25, 5], [20, 11], [17, 15], [11, 200]
+      ]
+    }
+  ],
+  "tn_curve": {"source": "vendor", "bus_voltage": { "value": 48.0, "units": "V"},
+    "speed_units": "rpm_output",
+    "torque_units": "N.m",
+    "tol": 0.05,
+    "note": "digitised from the 260713 manual's T-N curve image (section 1.3, 48 V), read at gridline crossings; +/-1 minor division, so roughly +/-5% in torque and +/-10 rpm. Axes are labelled in this revision, unlike 251210.",
+    "points": [
+      [280, 36.0],
+      [300, 33.0],
+      [320, 30.0],
+      [350, 26.0],
+      [375, 23.0],
+      [400, 18.5],
+      [415, 15.0],
+      [428, 10.0],
+      [430, 5.0]
+    ]
+  }
 }
