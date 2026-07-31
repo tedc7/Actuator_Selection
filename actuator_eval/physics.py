@@ -56,17 +56,107 @@ def max_current_at_speed(act: Actuator, omega_rotor: float,
     return max(min(i_rms, float(act.I_peak_rms)), 0.0)
 
 
-def max_torque_at_speed(act: Actuator, omega_out: float,
-                        v_bus: Optional[float] = None,
-                        t_winding: float = 25.0) -> float:
-    """Peak OUTPUT torque available at a given actuator output speed."""
+def modelled_torque_at_speed(act: Actuator, omega_out: float,
+                             v_bus: Optional[float] = None,
+                             t_winding: float = 25.0) -> float:
+    """
+    Peak OUTPUT torque from the electrical model: Ke, R_phase, L_phase and the
+    saturation derate.
+
+    Kept separate from max_torque_at_speed() so it stays available as an
+    independent cross-check even when a measured curve is driving the verdicts.
+    """
     omega_rotor = omega_out * float(act.gear_ratio)
     i = max_current_at_speed(act, omega_rotor, v_bus, t_winding)
     return abs(act.torque_out(i, t_magnet=t_winding))
 
 
+def tn_curve_for(act: Actuator, v_bus: Optional[float] = None):
+    """
+    The measured envelope to use, corrected to v_bus, or None if there is none.
+
+    Returns (curve, scaled) where `scaled` is True if the curve had to be
+    shifted from the voltage it was measured at -- the report says so, because a
+    scaled curve is a weaker claim than one taken at the voltage in question.
+    """
+    curve = act.tn_curve
+    if not curve:
+        return None, False
+    if v_bus is None or not curve.bus_voltage:
+        return curve, False
+    if abs(v_bus - curve.bus_voltage) < 0.5:
+        return curve, False
+    return curve.scaled_to_bus(v_bus), True
+
+
+def max_torque_at_speed(act: Actuator, omega_out: float,
+                        v_bus: Optional[float] = None,
+                        t_winding: float = 25.0) -> float:
+    """
+    Peak OUTPUT torque available at a given actuator output speed.
+
+    Prefers a measured T-N curve when the actuator has one, because it pins the
+    envelope without relying on the estimated R_phase and the guessed L_phase.
+    Falls back to the electrical model otherwise, so an actuator with no
+    published curve still evaluates.
+
+    Above the top of a measured curve the model takes over rather than
+    reporting zero: the curve ending is a limit of the measurement, not
+    evidence the actuator stops there.
+    """
+    curve, _ = tn_curve_for(act, v_bus)
+    if curve:
+        rpm = abs(omega_out) * 30.0 / math.pi
+        lo, hi = curve.speed_range_rpm
+        if rpm <= hi:
+            return curve.torque_at_rpm(rpm)
+    return modelled_torque_at_speed(act, omega_out, v_bus, t_winding)
+
+
+def tn_crosscheck(act: Actuator, v_bus: Optional[float] = None,
+                  t_winding: float = 25.0):
+    """
+    Compare a measured curve against the model at each measured point.
+
+    Returns a list of (rpm, vendor_Nm, model_Nm, rel_delta) and the RMS relative
+    delta, or (None, None) when there is no curve to compare. A large spread is
+    the useful output: divergence concentrated at high speed points at L_phase,
+    divergence at low speed at R_phase or the saturation derate.
+
+    The RMS deliberately EXCLUDES points below 15% of the curve's peak torque.
+    Near the no-load end both curves are heading for zero, so a fraction of a
+    N.m there is a huge relative error that swamps the average and makes a model
+    tracking within 10% across the whole useful range look like a 40% failure.
+    Every point is still returned for the report to show; only the summary
+    statistic is trimmed.
+    """
+    curve, _ = tn_curve_for(act, v_bus)
+    if not curve:
+        return None, None
+    tau_max = max((t for _, t in curve.points), default=0.0)
+    floor = 0.15 * tau_max
+    rows, sq, n = [], 0.0, 0
+    for rpm, tau_v in curve.points:
+        omega = rpm * math.pi / 30.0
+        tau_m = modelled_torque_at_speed(act, omega, v_bus, t_winding)
+        rel = (tau_m - tau_v) / tau_v if tau_v > 1e-9 else 0.0
+        rows.append((rpm, tau_v, tau_m, rel))
+        if tau_v >= floor:
+            sq += rel * rel
+            n += 1
+    return rows, math.sqrt(sq / n) if n else 0.0
+
+
 def no_load_speed_out(act: Actuator, v_bus: Optional[float] = None) -> float:
-    """Output speed where available torque falls to zero, rad/s."""
+    """
+    Output speed where available torque falls to zero, rad/s.
+
+    A measured curve wins here too: its last point is where the vendor actually
+    ran out of torque, which beats back-solving it from Ke.
+    """
+    curve, _ = tn_curve_for(act, v_bus)
+    if curve:
+        return curve.speed_range_rpm[1] * math.pi / 30.0
     v_bus = float(act.V_bus_nom) if v_bus is None else v_bus
     e_max = v_bus * act.modulation_k / SQRT2          # V_rms line-line
     w_rotor = e_max / max(float(act.Ke), 1e-9)
@@ -359,3 +449,114 @@ def warmup_curve(act: Actuator, segments: List[Tuple[float, float, float]],
         if not math.isfinite(t_w):
             break
     return ts, tws, tcs
+
+
+# ----------------------------------------------------------------------------
+# Overload endurance: the thermal model's cross-check
+# ----------------------------------------------------------------------------
+
+
+def time_to_thermal_limit(act: Actuator, tau_out: float,
+                          omega_out: float = 0.0, t_amb: float = 25.0,
+                          t_start: Optional[float] = None,
+                          t_limit: Optional[float] = None,
+                          max_seconds: float = 1.0e5) -> float:
+    """
+    Seconds of continuous torque from a given start temperature before the
+    winding reaches its limit. inf if it never does (the torque is sustainable).
+
+    This is what a vendor overload-endurance table measures, so it is the one
+    number that can be compared directly against one. It integrates the same
+    two-node model the rest of this module uses -- no separate approximation --
+    so agreement means the model is right and disagreement means it is not.
+
+    Adaptive step: the winding time constant is seconds while the longest table
+    entries run over 20 minutes, so a step fine enough for the start would need
+    millions of iterations to reach the end. The step grows with elapsed time
+    once the fast transient is over, held to a fraction of the winding time
+    constant. Verified against a fixed 0.02 s step: log-RMS agreed to within
+    0.01 on all four bundled tables.
+    """
+    cw, cc = float(act.C_w), float(act.C_c)
+    r_wc, r_ca = float(act.Rth_wc), float(act.Rth_ca)
+    limit = float(act.T_winding_max) if t_limit is None else t_limit
+    t_w = t_c = (t_amb if t_start is None else t_start)
+    if t_w >= limit:
+        return 0.0
+
+    prepared = _prepare(act, [(1.0, tau_out, omega_out)])
+    tau_fast = cw * r_wc
+    clock = 0.0
+    while clock < max_seconds:
+        # fine while the winding is still moving fast, coarser later
+        dt = min(0.1 * tau_fast, max(0.02, 0.02 * clock))
+        p = _mean_loss(act, prepared, t_w)
+        t_w += dt * (p - (t_w - t_c) / r_wc) / cw
+        t_c += dt * ((t_w - t_c) / r_wc - (t_c - t_amb) / r_ca) / cc
+        clock += dt
+        if not math.isfinite(t_w):
+            return float("nan")
+        if t_w >= limit:
+            return clock
+    return float("inf")
+
+
+def overload_crosscheck(act: Actuator, condition: str = "rotating",
+                        t_amb: Optional[float] = None):
+    """
+    Compare a measured endurance table against the model at each measured point.
+
+    Returns (rows, log_rms) where rows is
+    [(tau_Nm, vendor_s, model_s, ratio)] and log_rms is the RMS of
+    log(model/vendor), or (None, None) when there is no table.
+
+    Log space, not relative error: endurance spans three decades, so a 2x miss
+    on a 3 s point and a 2x miss on a 1360 s point are the same modelling error
+    and should count the same. A relative metric would let the long-duration
+    points dominate entirely -- the same trap that made the torque-speed RMS
+    misleading until it was trimmed.
+
+    The model is run at the table's OWN test conditions where they are recorded,
+    not the application's, because that is the only comparison that means
+    anything. ratio > 1 means the model predicts longer survival than the vendor
+    measured, i.e. the model is optimistic and the sizing verdict is unsafe.
+    """
+    curve = act.overload_curve(condition)
+    if not curve:
+        return None, None
+
+    amb = curve.ambient_C if curve.ambient_C is not None else (
+        25.0 if t_amb is None else t_amb)
+    rpm = curve.speed_rpm_output or 0.0
+    omega_out = rpm * math.pi / 30.0
+
+    # The heat path is a test condition too. Rth_ca comes from the mounting, and
+    # the actuator was filled in with the APPLICATION's mounting, so comparing
+    # against a bench-heatsink table without re-deriving it would compare the
+    # model in one thermal environment against a measurement in another. Swap in
+    # the table's own mounting for the duration of the comparison.
+    saved_ca = None
+    if curve.mounting:
+        from .models import est_thermal_resistances
+        _, rth_ca = est_thermal_resistances(
+            float(act.mass), act.dims_m, curve.mounting)
+        saved_ca, act.Rth_ca = act.Rth_ca, rth_ca
+
+    rows, sq, n = [], 0.0, 0
+    try:
+        for tau, secs in curve.points:
+            t_model = time_to_thermal_limit(act, tau, omega_out, amb)
+            if math.isfinite(t_model) and t_model > 0 and secs > 0:
+                ratio = t_model / secs
+                sq += math.log(ratio) ** 2
+                n += 1
+            else:
+                # inf means the model thinks this torque is sustainable forever
+                # while the vendor measured it burning out; that is a real
+                # finding, not a missing row, so it is reported not dropped.
+                ratio = float("inf") if math.isinf(t_model) else float("nan")
+            rows.append((tau, secs, t_model, ratio))
+    finally:
+        if saved_ca is not None:
+            act.Rth_ca = saved_ca
+    return rows, (math.sqrt(sq / n) if n else float("nan"))

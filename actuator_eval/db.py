@@ -21,7 +21,8 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 from .params import P, VENDOR_SPEC
-from .models import Actuator, Joint, Load, MotionProfile
+from .models import (Actuator, Joint, Load, MotionProfile, OverloadCurve,
+                     TNCurve)
 from . import units as U
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +48,8 @@ def application_search_path() -> List[str]:
     return [APPLICATION_DIR, EXAMPLE_DIR]
 
 _ACT_PLAIN = ["name", "vendor", "url", "price_usd", "gear_type",
-              "pole_pairs", "modulation_k", "notes"]
+              "pole_pairs", "modulation_k", "notes",
+              "datasheet", "entry_revision"]
 
 
 def _meta(container: dict, key: str) -> Tuple[str, Optional[float], str]:
@@ -139,7 +141,133 @@ def actuator_from_dict(d: Dict) -> Tuple[Actuator, U.UnitAudit]:
             p.note = (p.note + "; converted from output-referred Kt").strip("; ")
             a.Kt_rotor = p
 
+    a.tn_curve = _tn_curve_from_dict(d.get("tn_curve"), audit)
+    a.overload_curves = _overload_curves_from_dict(d.get("overload_curves"), audit)
+
     return a, audit
+
+
+def _overload_curves_from_dict(raw, audit) -> List[OverloadCurve]:
+    """
+    Parse measured overload-endurance tables. Absent means no thermal
+    cross-check is possible, which is the normal case, not an error.
+
+    Accepts a single table or a list of them: vendors publish separate tables
+    for rotating and stalled operation and they are not interchangeable.
+    """
+    if not raw:
+        return []
+    entries = raw if isinstance(raw, list) else [raw]
+    out = []
+    for e in entries:
+        if not e or e.get("source") in ("unavailable", "none") and "points" not in e:
+            continue
+        pts = e.get("points") or []
+        if len(pts) < 2:
+            continue
+
+        # Stall heating is 1.414x rotating for the same current, because the
+        # three phases heat unevenly when the rotor is not moving. Guessing
+        # which condition a table describes would be a 41% error, so require it.
+        cond = (e.get("condition") or "").lower()
+        if cond not in ("rotating", "stalled"):
+            raise U.UnitError(
+                f"overload_curves.condition '{e.get('condition')}' not understood; "
+                "use 'rotating' or 'stalled' -- stall heating is 1.414x rotating "
+                "for the same current, so this cannot be assumed")
+
+        tu = (e.get("torque_units") or "N.m").lower()
+        if tu not in ("n.m", "nm", "n_m"):
+            raise U.UnitError(
+                f"overload_curves.torque_units '{e.get('torque_units')}' not "
+                "understood; use 'N.m'")
+        su = (e.get("time_units") or "s").lower()
+        if su in ("s", "sec", "seconds"):
+            tconv = 1.0
+        elif su in ("min", "minutes"):
+            tconv = 60.0
+        else:
+            raise U.UnitError(
+                f"overload_curves.time_units '{e.get('time_units')}' not "
+                "understood; use 's' or 'min'")
+
+        c = OverloadCurve(
+            points=[(float(t), float(s) * tconv) for t, s in pts],
+            condition=cond,
+            speed_rpm_output=(float(e["speed_rpm_output"])
+                              if e.get("speed_rpm_output") is not None else None),
+            ambient_C=(float(e["ambient_C"])
+                       if e.get("ambient_C") is not None else None),
+            mounting=e.get("mounting"),
+            rated_torque=(float(e["rated_torque"])
+                          if e.get("rated_torque") is not None else None),
+            source=e.get("source", "vendor"),
+            tol=float(e.get("tol", 0.15)),
+            note=e.get("note", ""))
+        lo, hi = c.torque_range
+        audit.record(f"overload_curves[{cond}]", hi, "N.m",
+                     f"{len(c.points)} pts, {lo:.1f}-{hi:.1f} N.m, "
+                     f"{c.points[-1][1]:.0f}-{c.points[0][1]:.0f} s"
+                     + (f" at {c.speed_rpm_output:.0f} rpm" if c.speed_rpm_output else "")
+                     + (f", {c.ambient_C:.0f} degC" if c.ambient_C is not None else ""),
+                     True)
+        out.append(c)
+    return out
+
+
+def _tn_curve_from_dict(raw, audit) -> Optional[TNCurve]:
+    """
+    Parse a measured torque-speed envelope, or return None to fall back to the
+    computed one.
+
+    An entry may declare "source": "unavailable" to say explicitly that no
+    trustworthy curve exists -- worth doing when a vendor prints one you have
+    reason to distrust, because it records the judgement instead of looking
+    like an oversight.
+    """
+    if not raw:
+        return None
+    if raw.get("source") in ("unavailable", "none", None) and "points" not in raw:
+        return None
+
+    pts = raw.get("points") or []
+    if len(pts) < 2:
+        return None
+
+    # Speed may be given at the output (the usual way a datasheet plots it) or
+    # at the rotor. Getting this wrong is a gear-ratio-sized error, so the unit
+    # is explicit and anything unrecognised is refused rather than assumed.
+    su = (raw.get("speed_units") or "rpm_output").lower()
+    if su in ("rpm_output", "rpm", "rpm_out"):
+        conv = 1.0
+    elif su in ("rad_s_output", "rad/s", "rad_s"):
+        conv = 30.0 / math.pi
+    else:
+        raise U.UnitError(
+            f"tn_curve.speed_units '{raw.get('speed_units')}' not understood; "
+            "use 'rpm_output' or 'rad_s_output'")
+
+    tu = (raw.get("torque_units") or "N.m").lower()
+    if tu not in ("n.m", "nm", "n_m"):
+        raise U.UnitError(
+            f"tn_curve.torque_units '{raw.get('torque_units')}' not understood; use 'N.m'")
+
+    bus = raw.get("bus_voltage")
+    if isinstance(bus, dict):
+        bus = float(bus["value"])
+    elif bus is not None:
+        bus = float(bus)
+
+    curve = TNCurve(points=[(float(s) * conv, float(t)) for s, t in pts],
+                    bus_voltage=bus,
+                    source=raw.get("source", "vendor"),
+                    tol=float(raw.get("tol", 0.05)),
+                    note=raw.get("note", ""))
+    lo, hi = curve.speed_range_rpm
+    audit.record("tn_curve", hi, "rpm_output",
+                 f"{len(curve.points)} pts, {lo:.0f}-{hi:.0f} rpm"
+                 + (f" at {bus:.0f} V" if bus else ""), True)
+    return curve
 
 
 def resolve_actuator_path(name_or_path: str) -> str:

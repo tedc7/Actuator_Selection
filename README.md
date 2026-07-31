@@ -28,6 +28,17 @@ application file** so results never get separated from their inputs; pass
 `--outdir` to send them elsewhere, or give `--charts` an explicit filename. With
 `-n 1,2,3` you get one chart file per configuration.
 
+Output files are named `<application>_<actuator>`, both taken from the source
+filenames (falling back to the internal `name` field), so results for one
+application sort together and the pair that produced them is readable off the
+filename:
+
+```
+elbow_example_robstride_00.html          <- charts + embedded report
+elbow_example_robstride_00_report.txt    <- text report alone
+elbow_example_robstride_00_2x.html       <- one per count, from -n 1,2,3
+```
+
 No dependencies beyond the Python 3.9+ standard library. Tests: `python3 tests/test_smoke.py`.
 
 As a library:
@@ -50,6 +61,7 @@ print(ev.verdict, ev.binding.name)
 actuator_eval/            the engine, importable as a package
   db/actuators/           vendor reference data -- public, reusable, PR-able
     _TEMPLATE.json
+  db/datasheets/          raw vendor PDFs -- GITIGNORED, local copies only
 applications/             one file per joint on your robot -- GITIGNORED
   examples/               ...except these, so a fresh clone can run the above
     _TEMPLATE.json
@@ -117,6 +129,40 @@ relevant standard for touch limits; the threshold depends on material and
 contact duration, so set the number from your own safety case. The model gives a
 *lumped* housing temperature — real surfaces have hot spots near the stator, so
 treat it as optimistic and confirm by measurement.
+
+**Torque-limited controllers.** The profile is deliberately kinematic:
+`max_velocity` / `max_accel` / `max_jerk` describe the move the controller
+commands, without knowing which actuator is fitted. Whether that motion is
+*achievable* is then a separate question, answered by the Trajectory following
+check against the real torque-speed envelope — which is strictly better than a
+scalar torque cap, because available torque falls away with speed.
+
+Many controllers, though, limit torque rather than acceleration. For those, the
+`COMMANDED MOTION` block reports the acceleration limit restated as the torque
+it demands:
+
+```
+  inertia about joint   :   0.1545 kg.m^2 (load 0.1526 + reflected rotor 0.0019)
+  implied inertial torq :     6.18 N.m at the joint (= J_total * peak accel)
+                              3.09 N.m per actuator output (2x, ratio 1.00)
+                          inertia only -- gravity, friction and external torque are extra
+```
+
+Adjust `max_accel` until that figure matches your controller's cap and the two
+descriptions agree. Three things to watch:
+
+- It uses the acceleration actually **commanded**, which equals `max_accel` only
+  when the `peak acceleration` line reads `AT LIMIT`. A short stroke can be
+  jerk-limited and never reach the ceiling at all.
+- It is the **inertial term alone** — gravity, friction and external torque land
+  on top of it. If your cap covers total commanded torque, compare against the
+  `DUTY CYCLE` peak torque demand instead; the two figures bracket your case.
+- `J_total` includes rotor inertia reflected through the total reduction
+  *squared*, so it shifts between candidates. The load and rotor terms are
+  printed separately so the actuator-independent part can be read off directly.
+  Note that `J_rotor` is estimated from mass and diameter when a DB entry omits
+  it, so declare a datasheet value if the reflected term is a large share of the
+  total.
 
 ---
 
@@ -208,6 +254,164 @@ Keeping the physics in a library means the UI never becomes the source of truth.
 Yes, and it should be JSON files in git rather than a real database. Sourcing and entering vendor data is the genuinely expensive part of this problem, it is done once per actuator, and it needs review. Files give you diffs, blame, and pull requests. A schema is in `actuator_eval/db/actuators/_TEMPLATE.json`, and the matching one for applications is in `applications/examples/_TEMPLATE.json`.
 
 The important rule: **leave out what you do not know.** An omitted field gets a documented estimate and appears in the report's assumption list and sensitivity sweep. A fabricated field looks like data and silently corrupts the verdict.
+
+---
+
+## Levels of vendor transparency
+
+Vendors publish wildly different amounts, so the torque-speed envelope degrades
+gracefully instead of requiring data nobody has:
+
+| You have | Envelope comes from | Confidence |
+|---|---|---|
+| A measured T-N curve (vendor plot, or your own dyno) | the curve, interpolated | as good as the measurement |
+| Ke + measured `R_phase`/`L_phase` | the electrical model | good |
+| Ke + the two current ratings | the model, on scaled estimates | ~10% mid-curve |
+| Ke only | the model, on a flat `L_phase` placeholder | weak at high speed |
+
+The thermal model degrades the same way:
+
+| You have | Thermal limits come from | Confidence |
+|---|---|---|
+| A vendor overload endurance table (`overload_curves`) | the model, cross-checked against it and the disagreement reported | the check is quantified |
+| Mass, size, mounting only | the model, on four estimated parameters | unverified — chart 3 says so |
+
+Give an actuator a `tn_curve` and the tool uses it for the envelope and the
+no-load speed. Leave it out and everything still runs off the computed model.
+Either way the report says which one drove the verdicts.
+
+**The computed model is always reported alongside a measured curve, and is never
+fitted to it.** Keeping them independent is the point: the gap between them is
+evidence about the model's parameters. Chart 1 plots both — measured curve as a
+solid line with its data points marked, the model dashed over the top — so a
+discrepancy is visible rather than buried in a table.
+
+The shape of the disagreement says which parameter is wrong, and the report
+names it: tracking at low speed then falling away means the reactance term
+(`L_phase`), while a roughly constant offset means a scaling term (an early
+current limit, or `Kt`/`gear_eff`/`kt_sat_derate`).
+
+This is not hypothetical, and it has already paid for itself. `L_phase` used to
+be a flat 200 µH placeholder for every actuator, and comparing against the
+published curves showed it was wrong in *both* directions — the modelled RS00
+stayed at full torque far past where the real one rolls off, while the RS06
+reached only 18 N.m where the vendor measured 36.
+
+Fitting `L_phase` to each curve gives 638 µH for the RS00 and 35 µH for the
+RS06, an 18x spread that no single constant can cover. What does hold is
+`L · I_peak² / λ ≈ 13`, so `est_inductance()` now scales that way and lands
+within 13% of every fitted value, against −69%…+471% for the flat guess. Mid-curve
+model error dropped from 15–58% to **6–8%** across all three curves — including
+for actuators with no curve at all, which is the point.
+
+Note what was *not* done: `R_phase` is still not fitted to the curve. On the RS06
+no combination of `R_phase` and `L_phase` gets the error below 32%, so the gap was
+never a resistance error, and fitting would have distorted `R_phase` to absorb an
+inductance problem. `R_phase` also drives the thermal model, so that would have
+turned an envelope error into a thermal one.
+
+If you measure `L_phase`, pass it with `--set L_phase=2e-5` or put it in the
+entry, and the cross-check becomes a real validation of the whole model.
+
+## The same idea for the thermal model
+
+The thermal side had the same problem, worse: `Rth_wc`, `Rth_ca`, `C_w` and `C_c`
+are all estimates, and nothing checked them. A duty cycle near the thermal limit
+was being judged by four guesses in series.
+
+Vendors who publish **overload endurance tables** — how long the actuator held
+each torque before protection tripped — give the thermal model exactly what a
+T-N curve gives the electrical one. Put one in an entry as `overload_curves` and
+the tool integrates its own two-node model to the winding limit at each torque
+and reports the disagreement:
+
+```
+OVERLOAD ENDURANCE CROSS-CHECK (rotating)
+     N.m     vendor      model    ratio
+     6.0       285s     1755.0    6.16x  <--
+    14.0         3s       13.7    4.55x  <--
+  log-RMS disagreement: 1.56
+```
+
+Read the ratio as a safety direction: **greater than 1 means the model outlasts
+the measurement, so it is optimistic and any verdict resting on it is unsafe.**
+The report says so in words, and names the vendor's rated torque as the figure to
+prefer instead.
+
+Chart 3 puts three things in one frame — the model curve, the vendor points, and
+how long your duty cycle actually spends at or above each torque. The first two
+say whether the model can be trusted; the third says whether that matters for
+your application. It renders **even with no vendor data**, because an actuator
+with no measurement is precisely where the model is least checked; it is just
+labelled `UNVERIFIED` so nobody mistakes it for a rating.
+
+This immediately found something. Fitting `Rth_wc` to the four RobStride tables
+gives `Rth_wc·m^(1/3) ≈ 0.406` on three of them, confirming the mass exponent
+and showing the baseline constant was 2.5x too high — it was the small-frame
+BLDC textbook figure. Correcting it (1.5 → 0.60 °C/W) took endurance log-RMS from
+1.21/1.50/1.26 to 0.37/0.79/0.55 on the RS01/RS02/RS06.
+
+It also surfaced a contradiction worth knowing about. The **RS00 disagrees with
+itself**: its endurance table implies about twice the copper loss its own
+published T-N curve does. Iron loss cannot explain it (that scales with speed,
+and these tables vary torque at fixed speed), nor gearbox loss (right shape, but
+3–9 W against 34–347 W of copper), nor AC copper loss (the endurance test sits at
+the *bottom* of the T-N curve's frequency range). Fitting `R_phase` to the
+endurance data does resolve it, but then throws the modelled T-N envelope 18% off
+the vendor curve. So the two vendor datasets genuinely disagree, and the tool
+reports the gap rather than absorbing it into a parameter. Measuring `R_phase`
+(4-wire, line-to-line ÷ 2) would settle which one to believe.
+
+Note the same discipline as the T-N curve: **the model is never fitted to the
+endurance table.** The one change made — the `Rth_wc` constant — was a
+recalibration of a documented estimator against four independent datasets,
+cross-validated against a figure the fit never saw (it reproduces vendor rated
+torque to within 20% on all four), not a per-entry fudge factor.
+
+Stall tables are handled separately from rotating ones and are not
+interchangeable: a stalled winding heats one phase about 1.414x harder, which the
+two-node model cannot represent, so it reads optimistic against a stall table by
+construction — and says so.
+
+---
+
+## Which datasheet is an entry based on?
+
+Vendors revise datasheets **in place** — same URL, same title, often the same
+stated version — and quietly change specs between printings. An entry that does
+not record its source cannot be re-checked once the vendor has moved on, so each
+one carries a `datasheet` block naming the document and its sha256:
+
+```json
+"datasheet": {
+  "title":  "RobStride RS00 User Manual",
+  "revision": "251210",       // vendor's own stamp
+  "version":  "1.0",          // from the document's version-history page
+  "date":     "2025-11-25",
+  "file":     "robstride_00.pdf",
+  "sha256":   "0b4d6e35...",
+  "retrieved": "2026-07-29"
+},
+"entry_revision": "2026-07-29"   // when YOU last edited this entry
+```
+
+Every report repeats it in the CONFIGURATION block, so a saved report always
+names the document behind its numbers. An entry with no `datasheet` prints
+`NOT DECLARED` rather than staying silent.
+
+The hash is the part that matters. Vendor version fields are not dependable —
+all four bundled RobStride manuals claim "v1.0, 2025-11-25" despite carrying
+different file stamps and differing in content. To check a set of entries
+against the PDFs you have locally:
+
+```
+./eval_actuator.py --check-datasheets
+```
+
+`OK` means the document is byte-identical to the one the entry was written
+from. `MISMATCH` means the vendor changed it and the entry needs re-reading
+(exit status 2, so this can gate CI). `NOT LOCAL` is normal and not a failure —
+the PDFs are gitignored, so a fresh clone has none until you fetch your own.
 
 ---
 

@@ -25,6 +25,7 @@ anything drawn before the last fit() lands against a stale scale.
 
 from __future__ import annotations
 import math
+import re
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import physics as phys
@@ -107,6 +108,12 @@ class Plot:
         self.legend: List[Tuple[str, str, str]] = []
         self.xlo = self.xhi = self.ylo = self.yhi = None
         self.ymin_floor = None          # force the y axis to start here
+        # Optional tick relabelling. A chart that plots a transformed value
+        # (log10 of seconds, say) sets this to render the axis in the units the
+        # reader thinks in. None means format the raw value as usual.
+        self.xtick_fmt = None
+        self.xticks = None              # force these tick positions
+        self.footnote = ""              # one line under the plot
 
     # -- legend sizing ----------------------------------------------------
     def _legend_rows(self) -> int:
@@ -127,6 +134,37 @@ class Plot:
         extra = 15 * (self._legend_rows() - 1)
         if extra > 0:
             self.mt += extra
+
+    # -- footnote sizing --------------------------------------------------
+    def _footnote_lines(self) -> List[str]:
+        """
+        The footnote, wrapped to the plot width. These lines are long -- they
+        carry a whole sentence of interpretation -- so without wrapping they run
+        off the right edge, and without reserved height they land on top of the
+        x-axis label.
+        """
+        if not self.footnote:
+            return []
+        budget = max(int(self.pw / 5.6), 20)     # ~5.6 px per char at 11px
+        words, lines, cur = self.footnote.split(), [], ""
+        for w in words:
+            trial = f"{cur} {w}".strip()
+            if cur and len(trial) > budget:
+                lines.append(cur)
+                cur = w
+            else:
+                cur = trial
+        if cur:
+            lines.append(cur)
+        return lines
+
+    def _footnote_h(self) -> int:
+        n = len(self._footnote_lines())
+        return 0 if n == 0 else 14 * n + 6
+
+    def _grow_for_footnote(self):
+        """Reserve bottom margin so the footnote never sits on the x label."""
+        self.mb += self._footnote_h()
 
     # -- range ------------------------------------------------------------
     def fit(self, xs: Sequence[float] = (), ys: Sequence[float] = ()):
@@ -208,7 +246,12 @@ class Plot:
         self._queue.append(draw)
 
     def scatter(self, xs, ys, colour, label=None, r=2.8, opacity=0.8,
-                stroke="#ffffff", stroke_w=0.6):
+                stroke="#ffffff", stroke_w=0.6, marker="dot"):
+        """
+        Point series. marker="square" distinguishes a second series by SHAPE as
+        well as colour, which matters when two scatters share a plot and the
+        reader may be colourblind or printing in mono.
+        """
         self.fit(xs, ys)
         data = list(zip(xs, ys))
 
@@ -217,13 +260,21 @@ class Plot:
             for x, y in data:
                 if not (math.isfinite(x) and math.isfinite(y)):
                     continue
-                out.append(f'<circle cx="{self.px(x):.2f}" cy="{self.py(y):.2f}" '
-                           f'r="{r}" fill="{colour}" opacity="{opacity}" '
-                           f'stroke="{stroke}" stroke-width="{stroke_w}"/>')
+                cx, cy = self.px(x), self.py(y)
+                if marker == "square":
+                    s = r * 1.8
+                    out.append(f'<rect x="{cx-s/2:.2f}" y="{cy-s/2:.2f}" '
+                               f'width="{s:.2f}" height="{s:.2f}" '
+                               f'fill="{colour}" opacity="{opacity}" '
+                               f'stroke="{stroke}" stroke-width="{stroke_w}"/>')
+                else:
+                    out.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" '
+                               f'r="{r}" fill="{colour}" opacity="{opacity}" '
+                               f'stroke="{stroke}" stroke-width="{stroke_w}"/>')
             return "".join(out)
         self._queue.append(draw)
         if label:
-            self.legend.append((label, colour, "dot"))
+            self.legend.append((label, colour, marker))
 
     def marker(self, x, y, colour, label=None, r=5.5):
         self.fit([x], [y])
@@ -264,21 +315,24 @@ class Plot:
     # -- render ------------------------------------------------------------
     def render(self) -> str:
         self._grow_for_legend()
+        self._grow_for_footnote()
         self._finalise()
         o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {self.w} {self.h}" '
              f'width="100%" style="max-width:{self.w}px;height:auto;font-family:'
              f'system-ui,-apple-system,sans-serif">',
              f'<rect width="{self.w}" height="{self.h}" fill="#ffffff"/>']
 
-        for x in _nice_ticks(self.xlo, self.xhi):
+        for x in (self.xticks if self.xticks is not None
+                  else _nice_ticks(self.xlo, self.xhi)):
             if not (self.xlo <= x <= self.xhi):
                 continue
             o.append(f'<line x1="{self.px(x):.2f}" y1="{self.mt}" '
                      f'x2="{self.px(x):.2f}" y2="{self.mt+self.ph}" '
                      f'stroke="{GRID}" stroke-width="1"/>')
+            _lab = self.xtick_fmt(x) if self.xtick_fmt else _fmt(x)
             o.append(f'<text x="{self.px(x):.2f}" y="{self.mt+self.ph+18}" '
                      f'font-size="11" fill="{MUTED}" text-anchor="middle">'
-                     f'{_esc(_fmt(x))}</text>')
+                     f'{_esc(_lab)}</text>')
         for y in _nice_ticks(self.ylo, self.yhi):
             if not (self.ylo <= y <= self.yhi):
                 continue
@@ -305,7 +359,10 @@ class Plot:
             o.append(f'<text x="{self.ml}" y="36" font-size="11.5" '
                      f'fill="{MUTED}">{_esc(self.subtitle)}</text>')
         if self.xlabel:
-            o.append(f'<text x="{self.ml+self.pw/2}" y="{self.h-12}" font-size="12" '
+            # The footnote, when there is one, owns the bottom of the frame --
+            # _grow_for_footnote() has reserved room for it below this label.
+            _xl_y = self.h - 12 - self._footnote_h()
+            o.append(f'<text x="{self.ml+self.pw/2}" y="{_xl_y}" font-size="12" '
                      f'fill="{INK}" text-anchor="middle">{_esc(self.xlabel)}</text>')
         if self.ylabel:
             cy = self.mt + self.ph / 2
@@ -330,6 +387,9 @@ class Plot:
                     o.append(f'<circle cx="{x+6}" cy="{y-4}" r="3.6" fill="{colour}"/>')
                 elif kind == "star":
                     o.append(f'<circle cx="{x+6}" cy="{y-4}" r="4.2" fill="{colour}"/>')
+                elif kind == "square":
+                    o.append(f'<rect x="{x+2.4}" y="{y-7.6}" width="7.2" '
+                             f'height="7.2" fill="{colour}"/>')
                 else:
                     da = ' stroke-dasharray="5 3"' if kind == "dash" else ""
                     o.append(f'<line x1="{x}" y1="{y-4}" x2="{x+16}" y2="{y-4}" '
@@ -337,6 +397,11 @@ class Plot:
                 o.append(f'<text x="{x+22}" y="{y}" font-size="11" fill="{INK}">'
                          f'{_esc(label)}</text>')
                 x += w_item
+        _fl = self._footnote_lines()
+        for _k, _line in enumerate(_fl):
+            _y = self.h - 10 - 14 * (len(_fl) - 1 - _k)
+            o.append(f'<text x="{self.ml}" y="{_y}" font-size="11" '
+                     f'fill="{MUTED}">{_esc(_line)}</text>')
         o.append("</svg>")
         return "\n".join(o)
 
@@ -439,6 +504,10 @@ def torque_speed(ev: Evaluation, width=1020, height=630) -> str:
              xlabel="joint speed (rpm)", ylabel="joint torque (N.m)")
     p.ymin_floor = 0.0
 
+    # The envelope that actually drives the verdicts. When the actuator has a
+    # measured T-N curve this IS that curve; otherwise it is computed from Ke,
+    # R_phase and L_phase.
+    curve, scaled = phys.tn_curve_for(a, v_bus)
     w_max_out = phys.no_load_speed_out(a, v_bus)
     xs, ys = [], []
     for k in range(161):
@@ -446,7 +515,41 @@ def torque_speed(ev: Evaluation, width=1020, height=630) -> str:
         xs.append(w_out / max(float(j.ratio), 1e-9) * RPM)
         ys.append(phys.max_torque_at_speed(a, w_out, v_bus) * gain)
     p.area(xs, ys, SERIES[0], opacity=0.09)
-    p.line(xs, ys, SERIES[0], "peak (voltage limited)", width=2.4)
+    p.line(xs, ys, SERIES[0],
+           "peak (measured curve)" if curve else "peak (voltage limited)",
+           width=2.4)
+
+    # With a measured curve driving the envelope, plot the electrical model
+    # alongside it. The two are derived independently, so the gap between them is
+    # a readable diagnostic rather than decoration: a model that tracks the
+    # measurement validates R_phase and L_phase, and one that does not shows at
+    # a glance WHERE it fails -- high-speed divergence implicates L_phase,
+    # a uniform offset implicates the current limit or Kt.
+    if curve:
+        mxs, mys = [], []
+        for k in range(161):
+            w_out = w_max_out * k / 160.0
+            mxs.append(w_out / max(float(j.ratio), 1e-9) * RPM)
+            mys.append(phys.modelled_torque_at_speed(a, w_out, v_bus) * gain)
+        p.line(mxs, mys, SERIES[3], "our model (cross-check)",
+               dash="6 4", width=1.8)
+        # The measured points themselves, so digitisation is visible as data
+        # rather than implied by a smooth line.
+        #
+        # NOTE the unit change: the lines above are built from w_out in rad/s and
+        # so need the RPM factor, but TNCurve.points and tn_crosscheck() rows are
+        # ALREADY in output rpm. Applying RPM here too would scale them by 9.55.
+        p.scatter([s / max(float(j.ratio), 1e-9) for s, _ in curve.points],
+                  [t * gain for _, t in curve.points],
+                  SERIES[0], "vendor data points", r=3.4, opacity=0.95)
+        rows, rms = phys.tn_crosscheck(a, v_bus)
+        if rows and rms and rms > 0.25:
+            # Anchor the callout at the worst disagreement. rows are in rpm.
+            wr, wv, wm, _ = max(rows, key=lambda r: abs(r[3]))
+            p.text_at(wr / max(float(j.ratio), 1e-9),
+                      max(wv, wm) * gain,
+                      f"model off by {rms*100:.0f}% RMS -- see report",
+                      SERIES[3], dx=9, dy=-9, anchor="start", weight="600")
 
     tc = ev.extras.get("tau_cont_cap_joint")
     if tc:
@@ -533,7 +636,275 @@ def thermal(ev: Evaluation, width=1020, height=630) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Chart 3: margins
+# Chart 3: overload endurance -- measurement, model, and this duty's demands
+# ---------------------------------------------------------------------------
+
+def overload_endurance(ev: Evaluation, condition: str = "rotating",
+                       width=1020, height=630) -> str:
+    """
+    How long the actuator holds a given torque: what the model predicts, what
+    the vendor measured if they published it, and where this duty cycle sits.
+
+    Each layer answers a different question. The model line and the duty
+    exposure curve together say whether this application is anywhere near the
+    thermal limit -- the question most users actually have, and one that needs
+    no vendor data. Vendor points, when they exist, add the second question:
+    whether the model deserves to be believed, since Rth_wc, Rth_ca, C_w and C_c
+    are otherwise four estimates with nothing checking them.
+
+    The vendor layer is therefore OPTIONAL, not a precondition. Drawing this
+    only for actuators with a published table would hide it exactly where the
+    model is least verified, which is backwards. Where there is no measurement
+    the chart says so plainly rather than implying the model has been checked.
+
+    Returns "" only for the stall condition with no stall table -- there is no
+    "modelled stall endurance" worth drawing on its own, because the two-node
+    model cannot represent single-phase stall heating in the first place.
+    """
+    a, j = ev.actuator, ev.joint
+    curve = a.overload_curve(condition)
+    if curve:
+        rows, log_rms = phys.overload_crosscheck(a, condition)
+    else:
+        rows, log_rms = None, None
+        # Without a table there is nothing to anchor a stall plot to, and the
+        # model is known not to represent stall heating; skip rather than draw
+        # a line that would be believed.
+        if condition != "rotating":
+            return ""
+
+    # Time spans decades, so it goes on a log axis. Plot log10(seconds) and
+    # relabel the ticks back into seconds; that keeps the shared Plot linear.
+    def lg(s):
+        return math.log10(max(float(s), 1e-3))
+
+    def fmt_t(v):
+        # The last tick carries the continuous-rating point, whose claim is
+        # "indefinitely", not "28 hours". Labelling it with a finite duration
+        # would misread the one point on this chart that is explicitly an
+        # asymptote.
+        if v >= 5.0 - 1e-9:
+            return "indefinite"
+        s = 10.0 ** v
+        if s >= 3600:
+            return f"{s/3600:.0f} h"
+        if s >= 60:
+            return f"{s/60:.0f} min"
+        return f"{s:.0f} s" if s >= 1 else f"{s:.1f} s"
+
+    cfg = f"{j.n_actuators}x {a.name}"
+
+    # Joint-referred, like charts 1 and 2, so a reader comparing them is not
+    # silently switching frames. Chart 1's continuous line is a joint torque;
+    # plotting this one per-actuator made the same actuator look half as
+    # capable here as there (9.2 N.m vs 5.0 N.m for the 2x RS00 elbow) with
+    # nothing on either chart to say why.
+    #
+    # But everything BELOW this line is per-actuator physics: the vendor
+    # measured one unit, and time_to_thermal_limit integrates one winding. So
+    # gain is applied only where a torque crosses into or out of plot space --
+    # never inside the thermal integration. Scaling the model's OUTPUT instead
+    # of its INPUT would silently model a single actuator carrying the whole
+    # joint load, which is the one thing this chart must not imply.
+    gain = j.n_actuators * float(j.ratio) * float(j.ratio_eff)
+
+    # Test conditions: the vendor's where there is a table, otherwise this
+    # application's, since that is then what the model is being run at.
+    if curve:
+        test_rpm = curve.speed_rpm_output or 0.0
+        test_amb = curve.ambient_C if curve.ambient_C is not None else 25.0
+        cond_bits = []
+        if curve.speed_rpm_output is not None:
+            cond_bits.append("stalled" if curve.speed_rpm_output == 0
+                             else f"{curve.speed_rpm_output:.0f} rpm")
+        if curve.ambient_C is not None:
+            cond_bits.append(f"{curve.ambient_C:.0f} degC")
+        if curve.mounting:
+            cond_bits.append(curve.mounting)
+        where = "vendor test: " + ", ".join(cond_bits)
+        title = f"Overload endurance ({condition}): measured vs model"
+    else:
+        test_rpm = 0.0
+        test_amb = j.T_ambient
+        where = (f"modelled at {test_amb:.0f} degC ambient, "
+                 f"{j.mounting} -- no vendor measurement to check it")
+        title = "Overload endurance (modelled -- UNVERIFIED)"
+
+    # The frame note earns its place only when there is more than one actuator:
+    # at n=1 joint torque and actuator torque are the same number and the
+    # caveat would be noise.
+    frame = ("joint torque; actuators assumed to be loaded identically"
+             if j.n_actuators > 1 else "per actuator")
+
+    p = Plot(width, height, title=title,
+             subtitle=f"{cfg}  |  {frame}  |  {where}",
+             xlabel="time  (curve/points: how long the torque is held before the "
+                    "winding hits its limit  |  squares: one duty cycle period)",
+             ylabel="joint torque (N.m)" if j.n_actuators > 1
+                    else "output torque (N.m)")
+    p.xtick_fmt = fmt_t
+    p.xticks = [float(k) for k in range(-1, 6)]
+
+    # Torque range to sweep: the measured span where there is one, otherwise
+    # from the continuous limit up to the actuator's peak, which is the range
+    # over which "how long can I hold this?" is a meaningful question.
+    if curve:
+        lo, hi = curve.torque_range
+    else:
+        lo = phys.continuous_torque_limit(
+            a, test_amb, omega_rotor=test_rpm * math.pi / 30.0 * float(a.gear_ratio))
+        hi = float(a.tau_peak_out_spec) if a.tau_peak_out_spec else lo * 2.5
+        lo = min(lo * 1.02, hi * 0.98)      # just above continuous: finite time
+
+    # lo/hi are per-actuator torques and stay that way through the integration;
+    # only the plotted value is scaled to the joint.
+    taus, ts = [], []
+    for k in range(41):
+        tau = lo + (hi - lo) * k / 40.0
+        secs = phys.time_to_thermal_limit(
+            a, tau, test_rpm * math.pi / 30.0, test_amb)
+        if math.isfinite(secs) and secs > 0:
+            taus.append(tau * gain)
+            ts.append(lg(secs))
+    if ts:
+        p.line(ts, taus, SERIES[3],
+               "our model (cross-check)" if curve else "our model (unverified)",
+               width=2.2, dash="7 4")
+
+    if curve:
+        # The vendor measured ONE actuator. Plotting n x that is a statement
+        # about the pair that no one tested -- it holds only if the load really
+        # does split evenly and both units heat alike, which is what the
+        # subtitle declares. The legend repeats it here so the claim travels
+        # with the points rather than living only in the header.
+        p.scatter([lg(s) for _, s in curve.points],
+                  [t * gain for t, _ in curve.points],
+                  SERIES[0],
+                  f"vendor measured ({curve.source})" + (
+                      f", x{j.n_actuators}" if j.n_actuators > 1 else ""),
+                  r=4.0, opacity=0.95)
+
+    # The rated torque is the ASYMPTOTE of this same curve, not an independent
+    # reference level: the vendor's tables literally end "...6 N.m for 285 s,
+    # 5 rated". Drawing it as a horizontal line spanning the whole time axis
+    # claimed something false at the left -- that 5 N.m is the limit at one
+    # second, when 5 N.m for a second is trivially fine -- and competed visually
+    # with the curve it terminates. So it goes at the far right of the time
+    # axis, where "indefinitely" belongs, in the same colour as the measured
+    # points it continues.
+    rated_per_act = (curve.rated_torque if curve and curve.rated_torque
+                     else (float(a.tau_cont_out_spec)
+                           if a.tau_cont_out_spec else None))
+    if rated_per_act:
+        rated = rated_per_act * gain
+        x_inf = p.xticks[-1] if p.xticks else lg(1e5)
+        is_measured = bool(curve and curve.rated_torque)
+        col = SERIES[0] if is_measured else SERIES[2]
+        # A dotted lead-in from the last measured point: the vendor tested
+        # neither this stretch nor the asymptote's approach, so it is drawn as
+        # explicitly unmeasured rather than interpolated.
+        if curve and curve.points:
+            t_last, s_last = curve.points[0]
+            p.line([lg(s_last), x_inf], [t_last * gain, rated], col, None,
+                   width=1.4, dash="2 4", opacity=0.75)
+        p.scatter([x_inf], [rated], col,
+                  ("vendor rated, continuous (held indefinitely)" if is_measured
+                   else "vendor rated, continuous (spec table)"),
+                  r=4.6, opacity=0.95)
+        p.text_at(x_inf, rated, f"{rated:.1f} N.m  ", col, anchor="end",
+                  dy=-9, size=10, weight="600")
+
+    # The application, as one point per duty variant -- the same family chart 2
+    # sweeps -- at (cycle period, RMS-equivalent torque).
+    #
+    # RMS is the only torque that compares honestly against the two reference
+    # lines here. Both the vendor rated line and the endurance curve describe
+    # SUSTAINED operation, so plotting the profile's instantaneous peak against
+    # them invites a comparison that does not hold: the elbow touches 5.1 N.m
+    # for 23 ms of every 1.6 s, which sits right on the 5.0 N.m rated line and
+    # reads as marginal, while its RMS-equivalent torque is 2.3 N.m -- half the
+    # continuous limit. An earlier version of this chart drew a cumulative
+    # "time at or above" curve and made exactly that error.
+    #
+    # One point per variant also answers "what if I ran this harder?", which a
+    # single point cannot, and lands the whole family on the axis the reader is
+    # already reading the reference lines against.
+    variants = duty_variants(ev)
+    vx, vy, vlab = [], [], []
+    for label, segs, df, nominal in variants:
+        period = sum(float(s[0]) for s in segs)
+        if period <= 0:
+            continue
+        i_rms = phys.rms_current_of_duty(a, segs, t_est=float(a.T_winding_max))
+        # segs are per-actuator output (see duty_variants), so torque_out gives
+        # a per-actuator torque; scale to the joint for plotting.
+        tau_rms = abs(a.torque_out(i_rms, t_magnet=float(a.T_winding_max)))
+        if tau_rms <= 0:
+            continue
+        vx.append(lg(period))
+        vy.append(tau_rms * gain)
+        vlab.append((label, nominal, df))
+    if vx:
+        p.scatter(vx, vy, SERIES[1],
+                  "application profile (RMS-equivalent, per cycle)",
+                  r=5.0, opacity=0.95, marker="square")
+        for k, (label, nominal, df) in enumerate(vlab):
+            if nominal:
+                p.text_at(vx[k], vy[k],
+                          f"  as specified: {df*100:.0f}% duty, "
+                          f"{vy[k]:.2f} N.m RMS over {10**vx[k]:.2f} s",
+                          SERIES[1], dy=-9, size=10, weight="600")
+            else:
+                p.text_at(vx[k], vy[k], f"  {df*100:.0f}%", SERIES[1],
+                          dy=-8, size=9)
+
+    # The instantaneous peak is a different question -- can it be reached at all,
+    # not can it be held -- so it is annotated, not drawn on the endurance axis.
+    peaks = [abs(float(s[1])) for s in (ev.duty_segments or [])
+             if float(s[0]) > 0]
+    if peaks and vx:
+        p.footnote_extra = (
+            f"profile peaks at {max(peaks) * gain:.1f} N.m instantaneously; "
+            f"that is a torque-capability question (chart 1), not an "
+            f"endurance one")
+
+    # One line of plain language about what the comparison means. Two separate
+    # things matter and they are easy to conflate: whether the model agrees with
+    # the measurement, and whether this duty is anywhere near either of them.
+    bits = []
+    fin = [r[3] for r in (rows or []) if math.isfinite(r[3]) and r[3] > 0]
+    if fin:
+        gm = math.exp(sum(math.log(r) for r in fin) / len(fin))
+        if gm > 1.25:
+            bits.append(f"model outlasts the measurement by {gm:.1f}x "
+                        f"(OPTIMISTIC -- treat the model line as an upper bound)")
+        elif gm < 0.8:
+            bits.append(f"model is {1/gm:.1f}x conservative against the "
+                        f"measurement (verdicts safe, capability may be unused)")
+        else:
+            bits.append(f"model tracks the measurement within "
+                        f"{abs(gm-1)*100:.0f}%")
+    elif not curve:
+        bits.append("no vendor endurance data for this actuator -- the curve "
+                    "above is the model alone, resting on four estimated "
+                    "thermal parameters. Treat it as indicative, not a rating")
+    if vy:
+        worst_rms = max(vy)                      # already joint-referred
+        lo_t = (curve.torque_range[0] if curve else lo) * gain
+        if worst_rms < lo_t:
+            bits.append(f"even at 100% duty this profile is {worst_rms:.1f} N.m "
+                        f"RMS, below the {lo_t:.1f} N.m where "
+                        + ("the overload data starts" if curve
+                           else "the actuator stops being continuous-rated")
+                        + " -- sustained load is not the binding concern here")
+    if getattr(p, "footnote_extra", ""):
+        bits.append(p.footnote_extra)
+    p.footnote = ";  ".join(bits)
+    return p.render()
+
+
+# ---------------------------------------------------------------------------
+# Chart 4: margins
 # ---------------------------------------------------------------------------
 
 def margins(ev: Evaluation, width=1020) -> str:
@@ -603,6 +974,71 @@ overflow-x:auto;border:1px solid #e6e6e2;line-height:1.45}
 """
 
 
+def _endurance_section(ev: Evaluation) -> List[str]:
+    """
+    The endurance figures, one per test condition the vendor published, or
+    nothing at all when there is no measured table. Most actuators have none,
+    and an empty frame would imply the check was run and passed.
+    """
+    out = []
+    has_measured = any(ev.actuator.overload_curve(c)
+                       for c in ("rotating", "stalled"))
+    # Torques here are joint-referred, to match charts 1 and 2. That means the
+    # vendor's single-unit measurement is multiplied by n, which is a real
+    # assumption about load sharing and is stated rather than left implicit.
+    n_act = ev.joint.n_actuators
+    frame = ("" if n_act <= 1 else
+             f" Torques are at the joint, as in charts 1 and 2, so the "
+             f"vendor's per-actuator figures are scaled by {n_act}x; this "
+             f"assumes the {n_act} actuators are loaded identically and heat "
+             f"alike, which the vendor did not test.")
+    for cond in ("rotating", "stalled"):
+        svg = overload_endurance(ev, cond)
+        if not svg:
+            continue
+        if not out:
+            out.append("<h2>@. Overload endurance"
+                       + (" vs the vendor's measurement" if has_measured
+                          else " (modelled)")
+                       + "</h2>")
+        if cond != "rotating":
+            extra = (" Stall is the harsher case: with the rotor stationary the "
+                     "three phases heat unevenly (the vendor puts single-phase "
+                     "heating at 1.414x rotating), and the two-node model "
+                     "assumes even heating, so it reads optimistic here by "
+                     "construction.")
+        elif has_measured:
+            extra = (" The measurement and the model together say whether the "
+                     "thermal model can be trusted &mdash; it is otherwise four "
+                     "estimated parameters with nothing to check them against.")
+        else:
+            extra = (" There is no published endurance table for this actuator, "
+                     "so the model line is <em>unverified</em>: it rests on "
+                     "estimated values for Rth_wc, Rth_ca, C_w and C_c. It still "
+                     "shows how far this duty sits from the thermal limit, which "
+                     "is the practical question, but do not read it as a rating. "
+                     "Adding a vendor endurance table to the db entry turns it "
+                     "into a checked figure.")
+        out.append(
+            f"<figure>{svg}<figcaption>How long the winding lasts at each "
+            f"torque: what this tool's thermal model predicts (dashed)"
+            + (", what the vendor measured (dots)" if has_measured else "")
+            + f", and where the application sits (squares). The squares are the "
+            f"same duty-cycle family as chart 2, each plotted at its cycle "
+            f"period and its <em>RMS-equivalent</em> torque &mdash; the torque "
+            f"that heats the winding as much as the real varying profile does. "
+            f"RMS is what belongs on this axis: the rated point and the "
+            f"endurance curve both describe sustained load, so comparing an "
+            f"instantaneous peak against them would read as marginal when it is "
+            f"not. The continuous rating sits at the far right because it is the "
+            f"<em>asymptote</em> of the measured series, not a separate limit "
+            f"&mdash; a vendor endurance table ends by naming the torque that "
+            f"can be held indefinitely &mdash; and the dotted lead-in to it "
+            f"marks the stretch the vendor never tested.{frame}{extra}"
+            f"</figcaption></figure>")
+    return out
+
+
 def write_html(ev: Evaluation, path: str, text_report: str = "") -> str:
     """
     Write a self-contained HTML file for ONE actuator configuration.
@@ -650,10 +1086,20 @@ def write_html(ev: Evaluation, path: str, text_report: str = "") -> str:
         f"Rest is not free &mdash; a gravity-loaded joint still draws holding "
         f"current at zero speed.</figcaption></figure>",
 
-        "<h2>3. Margin by criterion</h2>",
+        *_endurance_section(ev),
+
+        "<h2>@. Margin by criterion</h2>",
         f"<figure>{margins(ev)}<figcaption>Anything left of the 1.0x line "
         f"fails. Advisory criteria are omitted.</figcaption></figure>",
     ]
+    # Number the sections here rather than in the literals: the endurance
+    # section is only present for actuators with a measured table, and hard
+    # numbers would read 1, 2, 4 for every actuator without one.
+    _n = 0
+    for _i, _part in enumerate(parts):
+        if _part.startswith("<h2>") and "Full text report" not in _part:
+            _n += 1
+            parts[_i] = re.sub(r"<h2>[@\d]+\.", f"<h2>{_n}.", _part)
     if text_report:
         parts += ["<h2>Full text report</h2>", f"<pre>{_esc(text_report)}</pre>"]
     parts.append("</div></body></html>")

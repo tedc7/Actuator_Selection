@@ -48,6 +48,18 @@ def render(ev: Evaluation, verbose: bool = True) -> str:
     if j.max_surface_temp is not None:
         add(f"  surface temp limit    : {j.max_surface_temp:.0f} degC (user safety)")
     add(f"  ambient (internal)    : {j.T_ambient:.0f} degC     mounting: {j.mounting}")
+
+    # Which vendor document these numbers came from. Vendors reissue datasheets
+    # without renaming them, so a report that does not say what it was based on
+    # cannot be audited once the source has moved on.
+    _ds = a.datasheet_id()
+    if _ds:
+        add(f"  actuator datasheet    : {_ds}")
+    else:
+        add("  actuator datasheet    : NOT DECLARED - values cannot be traced "
+            "to a source")
+    if a.entry_revision:
+        add(f"  db entry revised      : {a.entry_revision}")
     add(f"  actuation mass        : {n*float(a.mass)*1000:.0f} g")
     if a.price_usd:
         add(f"  actuation cost        : ${n*a.price_usd:,.0f}")
@@ -100,6 +112,24 @@ def render(ev: Evaluation, verbose: bool = True) -> str:
             f"{_lim(p.peak_accel, p.max_accel, 'rad/s^2')}")
         add(f"  jerk                  : {p.max_jerk:8.1f} rad/s^3 "
             f"(always at limit during transitions)")
+
+        # The acceleration limit restated as the torque it demands, for a
+        # controller whose ceiling is a torque rather than an acceleration.
+        # Gravity, friction and external torque are NOT in this figure -- it is
+        # the inertial term alone, so it matches an inertia-only torque cap.
+        if "tau_inertial_cmd" in ev.extras:
+            j_load = ev.extras["J_load_joint"]
+            j_refl = ev.extras["J_reflected_joint"]
+            tau_in = ev.extras["tau_inertial_cmd"]
+            add(f"  inertia about joint   : {j_load + j_refl:8.4f} kg.m^2 "
+                f"(load {j_load:.4f} + reflected rotor {j_refl:.4f})")
+            add(f"  implied inertial torq : {tau_in:8.2f} N.m at the joint "
+                f"(= J_total * peak accel)")
+            tau_per = ev.extras["tau_inertial_cmd_per_actuator"]
+            add(f"  {'':22}  {tau_per:8.2f} N.m per actuator output "
+                f"({n}x, ratio {float(j.ratio):.2f})")
+            add(f"  {'':22}  inertia only -- gravity, friction and external "
+                f"torque are extra")
 
     # --- criteria table ---
     add("")
@@ -181,6 +211,134 @@ def render(ev: Evaluation, verbose: bool = True) -> str:
     else:
         add("SENSITIVITY: no assumed parameter flips a verdict within its error")
         add("  band. The result is robust to the guesses that were made.")
+
+    # --- torque-speed envelope provenance ---
+    # Which envelope drove the verdicts, and if it was a measured curve, how far
+    # the independent electrical model disagrees with it. A large spread does not
+    # invalidate the verdict (the measurement wins) but it does say the model's
+    # R_phase / L_phase are wrong, which still matters for thermal predictions.
+    _vb = j.bus_v(a)
+    _curve, _scaled = phys.tn_curve_for(a, _vb)
+    add("")
+    add("TORQUE-SPEED ENVELOPE")
+    if _curve:
+        _lo, _hi = _curve.speed_range_rpm
+        add(f"  source   : measured curve ({_curve.source}), {len(_curve.points)} points, "
+            f"{_lo:.0f}-{_hi:.0f} rpm")
+        if _scaled:
+            add(f"  WARNING  : curve was measured at "
+                f"{a.tn_curve.bus_voltage:.0f} V, rescaled to {_vb:.0f} V. "
+                "Speed axis scaled by voltage ratio; torque axis assumed unchanged.")
+        add("  verdicts use the measured curve; the model below is an independent check")
+        rows, rms = phys.tn_crosscheck(a, _vb)
+        if rows:
+            add("")
+            add(f"  {'rpm':>6}  {'measured':>9}  {'model':>8}  {'delta':>8}")
+            for rpm, tv, tm, rel in rows:
+                flag = "  <-- " if abs(rel) > 0.25 else ""
+                add(f"  {rpm:>6.0f}  {tv:>9.2f}  {tm:>8.2f}  {rel*100:>+7.1f}%{flag}")
+            add(f"  RMS disagreement: {rms*100:.0f}%"
+                "   (over points above 15% of peak torque; the near-no-load"
+                " tail is excluded as both curves approach zero there)")
+            if rms > 0.25:
+                add("")
+                add("  The electrical model disagrees materially with the measured curve.")
+                add("  The verdicts above are unaffected -- they use the measurement -- but")
+                add("  the model's parameters are evidently wrong, and R_phase still")
+                add("  drives the thermal model.")
+                # Which parameter to suspect is readable from the SHAPE of the
+                # disagreement, so say so rather than making the reader guess.
+                # Judged on the same trimmed set as the RMS: the near-zero tail
+                # always diverges and would make every case look high-speed.
+                _tmax = max(r[1] for r in rows)
+                _sig = [r for r in rows if r[1] >= 0.15 * _tmax] or rows
+                lo_err = abs(_sig[0][3])
+                hi_err = max(abs(r[3]) for r in _sig[len(_sig) // 2:])
+                spread = max(abs(r[3]) for r in _sig) - min(abs(r[3]) for r in _sig)
+                if lo_err < 0.10 and hi_err > 0.25:
+                    add("  The model tracks the curve at low speed and falls away at high")
+                    add("  speed: that is the voltage/reactance term. Suspect L_phase")
+                    add("  (a placeholder guess unless you have set it).")
+                elif spread < 0.20:
+                    add("  The error is roughly constant across the whole speed range, which")
+                    add("  is not a rolloff problem. Suspect a scaling term: L_phase forcing")
+                    add("  an early current limit, or Kt/gear_eff/kt_sat_derate.")
+                else:
+                    add("  Suspect L_phase first (usually a placeholder), then R_phase.")
+    else:
+        add("  source   : computed from Ke, R_phase, L_phase (no measured curve)")
+        if a.tn_curve is None and isinstance(a.datasheet, dict):
+            add("  no vendor T-N curve recorded for this actuator; if one exists,")
+            add("  adding it to the db entry will tighten the envelope considerably")
+
+    # --- overload endurance: the thermal model's only measured check ---
+    for _cond in ("rotating", "stalled"):
+        _oc = a.overload_curve(_cond)
+        if not _oc:
+            continue
+        _rows, _lrms = phys.overload_crosscheck(a, _cond)
+        if not _rows:
+            continue
+        add("")
+        add(f"OVERLOAD ENDURANCE CROSS-CHECK ({_cond})")
+        _cond_bits = []
+        if _oc.speed_rpm_output is not None:
+            _cond_bits.append("stalled" if _oc.speed_rpm_output == 0
+                              else f"{_oc.speed_rpm_output:.0f} rpm output")
+        if _oc.ambient_C is not None:
+            _cond_bits.append(f"{_oc.ambient_C:.0f} degC ambient")
+        if _oc.mounting:
+            _cond_bits.append(f"mounting '{_oc.mounting}'")
+        add(f"  source   : measured ({_oc.source}), {len(_oc.points)} points"
+            + (f", +/-{_oc.tol*100:.0f}%" if _oc.tol else ""))
+        if _cond_bits:
+            add(f"  vendor test conditions: {', '.join(_cond_bits)}")
+        add("  the model is run at those conditions, NOT this application's")
+        add("")
+        add(f"  {'N.m':>6}  {'vendor':>9}  {'model':>9}  {'ratio':>7}")
+        for _tau, _vs, _ms, _ratio in _rows:
+            _ms_s = "never" if math.isinf(_ms) else f"{_ms:.1f}"
+            if math.isinf(_ratio):
+                _r_s, _flag = "  inf", "  <-- "
+            elif _ratio != _ratio:
+                _r_s, _flag = "    ?", "  <-- "
+            else:
+                _r_s = f"{_ratio:.2f}x"
+                _flag = "  <-- " if (_ratio > 1.5 or _ratio < 0.67) else ""
+            add(f"  {_tau:>6.1f}  {_vs:>8.0f}s  {_ms_s:>9}  {_r_s:>7}{_flag}")
+        add(f"  log-RMS disagreement: {_lrms:.2f}"
+            "   (log space: endurance spans three decades, so a 2x miss counts"
+            " the same at 3 s and at 1400 s)")
+
+        # Direction is the safety-relevant part, so say it in words.
+        _fin = [r[3] for r in _rows if math.isfinite(r[3]) and r[3] > 0]
+        if _fin:
+            _gm = math.exp(sum(math.log(r) for r in _fin) / len(_fin))
+            add("")
+            if _gm > 1.25:
+                add(f"  The model OUTLASTS the vendor's measurement by {_gm:.1f}x on"
+                    " average, i.e. it")
+                add("  is OPTIMISTIC: a duty cycle sized against it will overheat"
+                    " sooner than")
+                add("  this report implies. Treat the continuous-torque figure above as"
+                    " an")
+                add("  upper bound, and prefer the vendor's rated torque"
+                    + (f" ({_oc.rated_torque:.1f} N.m)" if _oc.rated_torque else "")
+                    + " until R_phase")
+                add("  is measured.")
+                if _cond == "stalled":
+                    add("  Expected here: the two-node model assumes even three-phase")
+                    add("  heating, but a stalled winding concentrates it (1.414x).")
+            elif _gm < 0.8:
+                add(f"  The model is CONSERVATIVE by {1/_gm:.1f}x against this"
+                    " measurement -- it")
+                add("  predicts overheating sooner than the vendor measured. Verdicts"
+                    " are safe")
+                add("  but may be leaving capability unused.")
+            else:
+                add(f"  The model tracks the measurement within {abs(_gm-1)*100:.0f}%"
+                    " on average, so the")
+                add("  thermal estimates are doing their job on this actuator.")
 
     # --- vendor cross-check ---
     cc = a.consistency_report()

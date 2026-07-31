@@ -13,13 +13,36 @@
 !/applications/examples/
 !/applications/README.md
 
+# ---------------------------------------------------------------------------
+# Raw vendor datasheets are kept locally, not committed.
+#
+# The JSON in db/actuators/ is the reviewable artifact: it carries the numbers
+# we actually use, each with a source, a tolerance, and a note naming the
+# datasheet section it came from. The PDFs behind it are large (several MB
+# each, vs. a few KB per JSON file), do not diff, and are vendor copyright, so
+# redistributing them from a public Apache-2.0 repo is not ours to do.
+#
+# Drop them in db/datasheets/ named to match the actuator file they support
+# (robstride_00.pdf <-> robstride_00.json) so the provenance notes stay
+# checkable by anyone who has fetched their own copy from the vendor.
+#
+# The README documenting that convention is exempted so it survives a clone.
+# ---------------------------------------------------------------------------
+/actuator_eval/db/datasheets/*
+!/actuator_eval/db/datasheets/README.md
+
 # Generated results, wherever they land.
 *_report_*.txt
 *_charts_*.html
 
-# ...but the committed reference example outputs stay tracked.
-!/applications/examples/elbow_example_report_2X_rs00.txt
-!/applications/examples/charts_2x_RS00_elbow.html
+# ...but the committed reference example outputs stay tracked. These names must
+# match what eval_actuator.py actually writes (<application>_<actuator>), or the
+# exemptions silently stop applying -- they did, after an earlier rename.
+!/applications/examples/elbow_example_robstride_00_report.txt
+!/applications/examples/elbow_example_robstride_00.html
+
+# Claude Code project instructions are local-only.
+CLAUDE.md
 
 # ---------------------------------------------------------------------------
 # Python

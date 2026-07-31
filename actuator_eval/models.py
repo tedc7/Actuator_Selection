@@ -58,8 +58,8 @@ def est_thermal_resistances(mass_kg: float, dims_m: Tuple[float, float, float],
     Estimate winding->case and case->ambient thermal resistance.
 
     case->ambient is natural convection over the housing area, h ~ 10 W/m^2K,
-    improved by conduction into the mounting structure. winding->case is scaled
-    from small-frame BLDC practice (~1.5 degC/W at this size).
+    improved by conduction into the mounting structure. winding->case is
+    calibrated against measured vendor overload-endurance data (see below).
     """
     a, b, c = dims_m
     area = 2 * (a * b) + 2 * (a * c) + 2 * (b * c)
@@ -77,11 +77,45 @@ def est_thermal_resistances(mass_kg: float, dims_m: Tuple[float, float, float],
                note=f"natural convection over {area*1e4:.0f} cm^2 housing, "
                     f"h=10 W/m^2K, mounting='{mounting}' factor {mount_factor}")
 
-    # winding->case scales roughly with 1/linear-dimension for similar builds
+    # winding->case scales roughly with 1/linear-dimension for similar builds.
+    #
+    # The 0.60 degC/W baseline is calibrated, not assumed: fitting Rth_wc to the
+    # published RobStride overload-endurance tables (RS00, RS01, RS02, RS06 at
+    # 260713) lands on 0.60 / 0.70 / 0.56 / 0.48 degC/W, i.e. Rth_wc*m^(1/3) =
+    # 0.406 for three of the four and 0.508 for the RS01 -- whose table is a
+    # duplicate of the RS02's, so it is not an independent point. The mass
+    # exponent is therefore confirmed by the data rather than assumed, and only
+    # the constant needed correcting: it was 1.5, the small-frame BLDC textbook
+    # figure, which made every actuator's overload endurance optimistic (RS00
+    # by 1.8x). Correcting it takes endurance log-RMS from 1.21/1.50/1.26 to
+    # 0.37/0.79/0.55 on the RS01/RS02/RS06.
+    #
+    # It does NOT fix the RS00, which gets worse (0.64 -> 1.56) and lands at
+    # 1.15x the vendor's rated torque, i.e. optimistic. That actuator needs
+    # roughly 2x the copper loss this tool estimates, and the shortfall is
+    # est_phase_resistance(), not this function: its 84%-efficiency assumption
+    # under-reads on the smallest, lowest-current modules. Iron loss is ruled
+    # out (it scales with speed, and these tables vary torque at fixed speed);
+    # so is the gearbox (right shape, but 3-9 W against 34-347 W of copper);
+    # so is AC copper loss (the endurance test sits at the BOTTOM of the
+    # frequency range the T-N curve covers, 233 Hz of 233-735, so any AC effect
+    # is smaller there, not larger). Fitting R_phase to the endurance data does
+    # reach log-RMS 0.24 and 0.81x rated, but it pushes the modelled T-N
+    # envelope 18% off the vendor curve, past the 15% that
+    # test_inductance_estimate_tracks_the_vendor_curves locks in -- so the two
+    # datasets genuinely disagree about the RS00 and the discrepancy is left
+    # visible rather than absorbed into a parameter.
+    #
+    # Verified insensitive to Rth_ca: the same x0.4 comes out under free_air,
+    # bolted_metal and heatsunk, over a 3-6x range of Rth_ca, because this data
+    # is winding-limited. So it is a real Rth_wc correction, not Rth_ca
+    # compensation. Calibrated on one vendor's QDD modules -- still an estimate,
+    # still in the sensitivity sweep. See est_inductance() for the same pattern.
     ref_mass = 0.31
-    rth_wc = P(1.5 * (ref_mass / max(mass_kg, 1e-3)) ** (1 / 3), "degC/W",
-               ESTIMATED, tol=0.50,
-               note="small-frame BLDC slot-to-housing typical, mass-scaled")
+    rth_wc = P(0.60 * (ref_mass / max(mass_kg, 1e-3)) ** (1 / 3), "degC/W",
+               ESTIMATED, tol=0.40,
+               note="slot-to-housing, mass-scaled; calibrated against vendor "
+                    "overload-endurance tables (4 actuators, +/-25%)")
     return rth_wc, rth_ca
 
 
@@ -107,10 +141,49 @@ def est_rotor_inertia(mass_kg: float, outer_dia_m: float) -> P:
              note="rotor ~30% of module mass, radius of gyration ~0.35*R_housing")
 
 
-def est_inductance(kt_rotor: float, pole_pairs: int) -> P:
-    """Phase inductance from a typical 1 ms electrical time constant."""
+# Dimensionless machine constant in L = K * lambda / I_peak^2, calibrated by
+# fitting L_phase to the published RobStride T-N curves (RS00, RS02, RS06):
+# K came out 14.5 / 11.8 / 13.4, so ~13 with a +/-15% spread across an 18x
+# range of inductance. See est_inductance().
+INDUCTANCE_K = 13.2
+
+
+def est_inductance(kt_rotor: float, pole_pairs: int,
+                   i_peak_rms: float = 0.0) -> P:
+    """
+    Phase inductance, scaled to the machine rather than assumed flat.
+
+    L was previously a flat 200 uH placeholder for every actuator, which is very
+    wrong in both directions: fitting the vendor T-N curves gives 638 uH for a
+    RobStride 00 and 35 uH for an 06. Since L sets the reactive voltage drop
+    we*L*i, that error decides where the torque-speed envelope rolls off, and a
+    flat guess made the RS00 look far too strong at speed and the RS06 far too
+    weak.
+
+    The scaling comes from L * I_peak^2 / lambda being roughly constant across
+    the family -- stored magnetic energy against torque-producing flux linkage,
+    which is a dimensionless property of how hard the magnetics are pushed. It
+    reproduces all three fitted values to within 13%, against -69%..+471% for
+    the flat guess.
+
+    Still an estimate: it is calibrated on one vendor's QDD modules, so treat it
+    as a better starting point rather than a substitute for measurement. It stays
+    marked ESTIMATED and keeps a wide tolerance so the sensitivity sweep still
+    flags it. A measured L_phase, or a T-N curve to check against, beats it.
+    """
+    lam = kt_rotor / (1.5 * pole_pairs * SQRT2)     # peak per-phase flux linkage
+    if i_peak_rms and i_peak_rms > 0 and lam > 0:
+        L = INDUCTANCE_K * lam / (i_peak_rms ** 2)
+        # Clamp to the range physically plausible for integrated QDD actuators;
+        # outside it the scaling is being extrapolated past its calibration.
+        L = min(max(L, 5e-6), 3e-3)
+        return P(L, "H", ESTIMATED, tol=0.40,
+                 note=f"L = {INDUCTANCE_K} * lambda / I_peak^2, calibrated on "
+                      "RobStride T-N curves (+/-13% on those); sets where the "
+                      "envelope rolls off -- measure it, or supply a tn_curve")
     return P(200e-6, "H", GUESS, tol=1.0,
-             note="placeholder; only matters near the high-speed voltage limit")
+             note="placeholder; no I_peak to scale from. Only matters near the "
+                  "high-speed voltage limit, but it decides the rolloff there")
 
 
 GEAR_EFFICIENCY = {          # per stage, typical, warm
@@ -129,11 +202,190 @@ GEAR_EFFICIENCY = {          # per stage, typical, warm
 # ----------------------------------------------------------------------------
 
 @dataclass
+class TNCurve:
+    """
+    A measured torque-speed envelope: the peak output torque a real actuator
+    produced at each speed, on a stated bus.
+
+    This exists because the computed envelope in physics.max_torque_at_speed()
+    is only as good as Ke, R_phase and L_phase, and the last two are usually
+    estimates -- L_phase is a flat guess at +/-100%. When a vendor publishes a
+    T-N curve (or you dyno one yourself), it pins the whole envelope at once
+    and there is no reason to prefer a model over it.
+
+    The curve is authoritative where it has data; the computed envelope is kept
+    alongside as an independent cross-check rather than being fitted to it, so
+    a disagreement stays visible instead of being absorbed.
+
+    Points are (output rpm, N.m) sorted by speed. Torque is taken as 0 above
+    the last point -- do not extrapolate an envelope upward off the end of
+    measured data.
+    """
+    points: List[Tuple[float, float]] = field(default_factory=list)
+    bus_voltage: Optional[float] = None      # V, the bus the curve was taken on
+    source: str = "vendor"
+    tol: float = 0.05
+    note: str = ""
+
+    def __post_init__(self):
+        self.points = sorted((float(s), float(t)) for s, t in self.points)
+
+    def __bool__(self) -> bool:
+        return len(self.points) >= 2
+
+    @property
+    def speed_range_rpm(self) -> Tuple[float, float]:
+        return (self.points[0][0], self.points[-1][0])
+
+    def torque_at_rpm(self, rpm: float) -> float:
+        """
+        Linear interpolation in output rpm. Below the first point the curve is
+        held flat at its first value (that region is current-limited, not
+        voltage-limited, so torque does not keep rising); above the last point
+        it is zero.
+        """
+        if not self.points:
+            return 0.0
+        rpm = abs(rpm)
+        pts = self.points
+        if rpm <= pts[0][0]:
+            return pts[0][1]
+        # AT the last point return its value; only past it does the envelope
+        # collapse to zero. Otherwise a curve queried exactly at its endpoint
+        # reports no torque, which is wrong and easy to hit.
+        if rpm >= pts[-1][0]:
+            return pts[-1][1] if rpm == pts[-1][0] else 0.0
+        for (s0, t0), (s1, t1) in zip(pts, pts[1:]):
+            if s0 <= rpm <= s1:
+                if s1 == s0:
+                    return max(t0, t1)
+                f = (rpm - s0) / (s1 - s0)
+                return t0 + f * (t1 - t0)
+        return 0.0
+
+    def torque_at(self, omega_out: float) -> float:
+        """Same, taking rad/s -- the unit the rest of the engine works in."""
+        return self.torque_at_rpm(abs(omega_out) * 30.0 / math.pi)
+
+    def scaled_to_bus(self, v_bus: float) -> "TNCurve":
+        """
+        A curve measured at one bus voltage, shifted to another.
+
+        Speed at a given torque scales roughly with available voltage while the
+        torque axis is set by current, so this stretches the speed axis by
+        v_bus / v_curve and leaves torque alone. It is a first-order correction,
+        not a substitute for a curve measured at the voltage you care about --
+        callers should say so in the report.
+        """
+        if not self.bus_voltage or not v_bus or abs(v_bus - self.bus_voltage) < 1e-9:
+            return self
+        k = v_bus / self.bus_voltage
+        out = TNCurve([(s * k, t) for s, t in self.points],
+                      bus_voltage=v_bus, source=self.source, tol=self.tol,
+                      note=(self.note + f"; speed axis scaled x{k:.3f} from "
+                            f"{self.bus_voltage:.0f} V to {v_bus:.0f} V").strip("; "))
+        return out
+
+
+@dataclass
+class OverloadCurve:
+    """
+    Measured overload endurance: how long the actuator sustained each torque
+    before its thermal protection stopped it.
+
+    This is the only vendor data that constrains the THERMAL model the way a
+    TNCurve constrains the electrical one. Rth_wc, Rth_ca, C_w and C_c are all
+    estimates, and until something measured is compared against them a duty
+    cycle near the thermal limit is being judged by four guesses in series.
+
+    As with TNCurve, the measurement is authoritative and the model is kept
+    beside it as an independent cross-check rather than being fitted to it. That
+    matters more here than for torque-speed, because these tables have caught a
+    vendor contradicting itself: the RobStride RS00's endurance implies about 2x
+    the copper loss its own published T-N curve does, and no loss term in this
+    model reconciles the two. A cross-check surfaces that; a fit would bury it.
+
+    The test conditions are part of the data, not metadata. A table taken at
+    100 rpm on a bench heat sink says nothing about a stalled joint in a warm
+    enclosure, so the conditions are recorded and the report states them.
+
+    Points are (output N.m, seconds) sorted by torque.
+    """
+    points: List[Tuple[float, float]] = field(default_factory=list)
+    condition: str = "rotating"          # "rotating" | "stalled"
+    speed_rpm_output: Optional[float] = None
+    ambient_C: Optional[float] = None
+    mounting: Optional[str] = None
+    rated_torque: Optional[float] = None   # the table's own continuous endpoint
+    source: str = "vendor"
+    tol: float = 0.15
+    note: str = ""
+
+    def __post_init__(self):
+        self.points = sorted((float(t), float(s)) for t, s in self.points)
+
+    def __bool__(self) -> bool:
+        return len(self.points) >= 2
+
+    @property
+    def torque_range(self) -> Tuple[float, float]:
+        return (self.points[0][0], self.points[-1][0])
+
+    def seconds_at_torque(self, tau: float) -> Optional[float]:
+        """
+        Interpolated endurance at a torque, or None outside the measured range.
+
+        Log-linear in time, because endurance spans three decades (3 s to 1360 s
+        in the bundled tables) and interpolating linearly across a decade is
+        meaningless. Returns None rather than extrapolating: below the table the
+        actuator is continuous-rated and "seconds" is the wrong question, above
+        it there is no data.
+        """
+        if not self.points:
+            return None
+        tau = abs(tau)
+        lo, hi = self.torque_range
+        if tau < lo or tau > hi:
+            return None
+        for (t0, s0), (t1, s1) in zip(self.points, self.points[1:]):
+            if t0 <= tau <= t1:
+                if t1 == t0:
+                    return min(s0, s1)
+                f = (tau - t0) / (t1 - t0)
+                return math.exp(math.log(s0) + f * (math.log(s1) - math.log(s0)))
+        return None
+
+
+@dataclass
 class Actuator:
     name: str = "unnamed"
     vendor: str = ""
     url: str = ""
     price_usd: Optional[float] = None
+
+    # Which vendor document these numbers were read out of. Vendors revise
+    # datasheets in place, so an entry that does not say what it was sourced
+    # from cannot be re-checked later. See datasheet_id() and the datasheet
+    # block in db/actuators/_TEMPLATE.json.
+    datasheet: Optional[dict] = None
+    entry_revision: Optional[str] = None   # ISO date this entry was last edited
+
+    # Measured torque-speed envelope, if anyone has one. None means fall back
+    # to the computed envelope; see TNCurve and physics.max_torque_at_speed().
+    tn_curve: Optional[TNCurve] = None
+
+    # Measured overload endurance, if published. Cross-checks the thermal model
+    # the way tn_curve cross-checks the electrical one; see OverloadCurve and
+    # physics.overload_crosscheck(). A vendor may publish one table per test
+    # condition (rotating and stalled heat very differently), so this is a list.
+    overload_curves: List[OverloadCurve] = field(default_factory=list)
+
+    def overload_curve(self, condition: str = "rotating") -> Optional[OverloadCurve]:
+        """The endurance table for a test condition, or None if not published."""
+        for c in self.overload_curves:
+            if c.condition == condition and c:
+                return c
+        return None
 
     # mechanical
     mass: P = None                     # kg
@@ -201,7 +453,10 @@ class Actuator:
                                    note="typical Kt fade at peak current")
 
         if self.L_phase is None:
-            self.L_phase = est_inductance(float(self.Kt_rotor), self.pole_pairs)
+            # Scales with I_peak, so this must come after the currents are set.
+            self.L_phase = est_inductance(
+                float(self.Kt_rotor), self.pole_pairs,
+                float(self.I_peak_rms) if self.I_peak_rms is not None else 0.0)
 
         if self.R_phase is None:
             w_rated = self._rated_rotor_speed()
@@ -246,6 +501,27 @@ class Actuator:
         return 0.8 * e_max / max(float(self.Ke), 1e-9)
 
     # ------------------------------------------------------------------
+    def datasheet_id(self) -> str:
+        """
+        One-line identification of the vendor document behind these numbers.
+
+        Returns "" if the entry does not declare one, which is itself worth
+        reporting: it means the values cannot be traced back to a source.
+        """
+        d = self.datasheet or {}
+        title = d.get("title") or d.get("file") or ""
+        bits = []
+        if d.get("revision"):
+            bits.append(f"rev {d['revision']}")
+        if d.get("version"):
+            bits.append(f"doc v{d['version']}")
+        if d.get("date"):
+            bits.append(d["date"])
+        tail = ", ".join(bits)
+        if title and tail:
+            return f"{title} ({tail})"
+        return title or tail
+
     @property
     def Kt_out(self) -> float:
         """Output-referred torque constant, N.m per A_rms."""
