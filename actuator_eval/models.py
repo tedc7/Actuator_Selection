@@ -18,9 +18,12 @@ Sign / unit conventions (stated once, used everywhere):
 from __future__ import annotations
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from .params import P, as_P, VENDOR_SPEC, VENDOR_DERIVED, ESTIMATED, GUESS
+
+if TYPE_CHECKING:                      # avoids a cycle: envelope.py imports params
+    from .envelope import Envelope
 
 G = 9.80665
 SQRT2 = math.sqrt(2.0)
@@ -840,8 +843,19 @@ class Joint:
     lead_m: Optional[float] = None     # for prismatic: metres per output revolution
 
     load: Load = field(default_factory=Load)
+
+    # --- how this joint moves, in order of precedence ---------------------
+    # envelope > profile > duty_segments. An envelope is a record of what the
+    # joint ACTUALLY did, so it supersedes a profile, which is a designer's
+    # guess at one simple move; a profile in turn supersedes duty_segments,
+    # which is a hand-written segment list with no solver behind it. Defining
+    # several is fine and expected -- a superseded block is kept, not deleted,
+    # so dropping the envelope reference falls straight back to the profile.
+    # motion_source pins the choice: envelope | profile | duty_segments | auto.
     profile: Optional[MotionProfile] = None
     duty_segments: Optional[List[Tuple[float, float, float]]] = None  # (dt, tau_joint, omega_joint)
+    envelope: Optional["Envelope"] = None
+    motion_source: str = "auto"
 
     # --- power system: a property of THIS application, not of the actuator ---
     # The vendor's "rated voltage" is what they characterised the unit at. What
@@ -905,15 +919,60 @@ class Joint:
         return self
 
     # ------------------------------------------------------------------
+    MOTION_SOURCES = ("envelope", "profile", "duty_segments")
+
+    def active_motion_source(self) -> str:
+        """
+        Which block drives the evaluation: the highest-precedence one defined,
+        unless motion_source pins a specific one.
+
+        Pinning a block that is not defined is an error rather than a silent
+        fallback -- the whole point of the pin is to be sure which input you are
+        looking at, so quietly evaluating a different one would defeat it.
+        """
+        have = {"envelope": self.envelope is not None,
+                "profile": self.profile is not None,
+                "duty_segments": self.duty_segments is not None}
+        pin = (self.motion_source or "auto").strip()
+        if pin and pin != "auto":
+            if pin not in self.MOTION_SOURCES:
+                raise ValueError(
+                    f"joint '{self.name}': motion_source '{pin}' is not one of "
+                    f"{', '.join(self.MOTION_SOURCES)} or 'auto'.")
+            if not have[pin]:
+                raise ValueError(
+                    f"joint '{self.name}': motion_source pins '{pin}' but no "
+                    f"'{pin}' block is defined. Defined: "
+                    f"{', '.join(k for k, v in have.items() if v) or 'none'}.")
+            return pin
+        for src in self.MOTION_SOURCES:
+            if have[src]:
+                return src
+        raise ValueError(
+            f"joint '{self.name}' declares no motion. Give it an envelope, a "
+            f"profile, or a duty_segments list.")
+
+    def superseded_motion_sources(self) -> List[str]:
+        """Defined blocks that the active one outranks, for the report to name."""
+        active = self.active_motion_source()
+        have = {"envelope": self.envelope is not None,
+                "profile": self.profile is not None,
+                "duty_segments": self.duty_segments is not None}
+        return [s for s in self.MOTION_SOURCES if have[s] and s != active]
+
     def required_torque_profile(self, act: "Actuator") -> List[Tuple[float, float, float]]:
         """
         Build [(dt, tau_joint, omega_joint)] including inertia, gravity and the
         reflected rotor inertia of the actuators actually fitted.
         """
-        if self.duty_segments is not None:
+        src = self.active_motion_source()
+        if src == "envelope":
+            # Already a measured record at the joint: the inertia, gravity and
+            # friction terms below are how you PREDICT a torque history, and
+            # this one was observed instead.
+            return self.envelope.as_duty_segments()
+        if src == "duty_segments":
             return list(self.duty_segments)
-        if self.profile is None:
-            raise ValueError(f"joint '{self.name}' has neither a profile nor duty_segments")
 
         # rotor inertia reflected to the joint, for all n actuators
         total_ratio = float(act.gear_ratio) * float(self.ratio)
@@ -948,11 +1007,16 @@ class Joint:
         """
         Phase tag per segment of required_torque_profile(), aligned 1:1 with it.
 
-        Trapezoidal profiles only: an explicit duty_segments list carries no
-        trajectory to classify, so the caller gets an empty list and should fall
-        back to a single unlabelled series.
+        An envelope gets regime tags instead (holding / driving / regenerating),
+        which is the split that carries information when there is no commanded
+        trajectory. An explicit duty_segments list carries neither, so the
+        caller gets an empty list and should fall back to a single unlabelled
+        series.
         """
-        if self.duty_segments is not None or self.profile is None:
+        src = self.active_motion_source()
+        if src == "envelope":
+            return self.envelope.motion_phases()
+        if src != "profile":
             return []
         traj = self.profile.trajectory()
         al_pk = max((abs(a) for _, _, _, a in traj), default=0.0)

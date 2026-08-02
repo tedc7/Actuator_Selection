@@ -165,13 +165,57 @@
   },
 
   "_duty_segments": [
-    "Alternative to profile: an explicit [[dt, torque, speed], ...] history at the",
-    "JOINT, with the units declared alongside. Takes precedence over profile if",
-    "both are present. Include the rest periods as zero-speed segments -- and note",
-    "that a gravity-loaded joint still draws holding current at zero speed.",
+    "The most primitive way to declare motion: an explicit [[dt, torque, speed],",
+    "...] history at the JOINT, with the units declared alongside. Include the",
+    "rest periods as zero-speed segments -- and note that a gravity-loaded joint",
+    "still draws holding current at zero speed.",
     "",
     "\"duty_segments_units\": [\"s\", \"N.m\", \"rpm\"],",
     "\"duty_segments\": [[0.2, 8.0, 40], [0.3, 2.0, 60], [0.5, 1.2, 0]]"
+  ],
+
+  "_MOTION_PRECEDENCE": [
+    "Three ways to say how this joint moves. The highest one DEFINED wins:",
+    "",
+    "    envelope  >  profile  >  duty_segments",
+    "",
+    "An envelope is a summary of a real logged session, so it supersedes a",
+    "profile, which is a designer's guess at one simple move; a profile in turn",
+    "supersedes duty_segments, which is a hand-written list with no solver",
+    "behind it. Declaring several is fine and expected -- the superseded blocks",
+    "are kept, not deleted, so removing the higher one falls straight back. The",
+    "report names which is active and which are being superseded.",
+    "",
+    "Set motion_source to pin one: envelope | profile | duty_segments | auto",
+    "(the default). Pinning a block you have not defined is an error rather than",
+    "a silent fallback -- the point of pinning is to be certain which input you",
+    "are looking at. --motion-source overrides it for a single run, which is how",
+    "you A/B a commanded profile against a measured envelope with no edits.",
+    "",
+    "\"motion_source\": \"auto\","
+  ],
+
+  "_envelope": [
+    "A measured operating envelope: what this joint ACTUALLY did over a real",
+    "session, summarised from a controller log by envelope_from_log.py. Sizing",
+    "against a real mix of tasks, payloads and idle beats sizing against one",
+    "idealised move repeated forever -- especially thermally, where a profile is",
+    "over-confident.",
+    "",
+    "The logger only has to append three columns at whatever fixed rate it",
+    "already runs: time, position, torque. Everything else happens afterwards.",
+    "",
+    "Envelopes live in envelopes/ (gitignored, like applications) and are named",
+    "or given as a path. They carry their own provenance -- which log, which",
+    "robot, which day -- so re-capturing the same joint produces a diff that",
+    "touches only the envelope file.",
+    "",
+    "\"envelope\": \"elbow_pick_place_2026_07\",",
+    "  or, to attach a note:",
+    "\"envelope\": {\"file\": \"elbow_pick_place_2026_07\",",
+    "              \"note\": \"July throughput trial, cell 3\"}",
+    "",
+    "See applications/examples/elbow_envelope_example.json for a working one."
   ],
 
   "_POWER_SYSTEM": [

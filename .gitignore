@@ -40,6 +40,15 @@
 # exemptions silently stop applying -- they did, after an earlier rename.
 !/applications/examples/elbow_example_robstride_00_report.txt
 !/applications/examples/elbow_example_robstride_00.html
+!/applications/examples/elbow_envelope_example_robstride_00_report.txt
+!/applications/examples/elbow_envelope_example_robstride_00.html
+
+# Captured envelopes are the user's own operating data, like applications, so
+# they stay out of the repo -- but the bundled example is public so a fresh
+# clone can run the envelope path without a robot.
+/envelopes/*
+!/envelopes/examples/
+!/envelopes/examples/*.json
 
 # Claude Code project instructions are local-only.
 CLAUDE.md

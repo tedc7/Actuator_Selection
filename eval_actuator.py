@@ -127,6 +127,14 @@ def main(argv=None):
                     help="max allowed housing surface temperature (degC)")
     ap.add_argument("--mounting", default=None,
                     help="free_air | bolted_plastic | bolted_metal | heatsunk")
+    ap.add_argument("--envelope", default=None, metavar="NAME",
+                    help="evaluate against this measured envelope instead of "
+                         "the one the application names; use to A/B two captures "
+                         "of the same joint")
+    ap.add_argument("--motion-source", default=None,
+                    choices=["envelope", "profile", "duty_segments", "auto"],
+                    help="pin which block drives the evaluation. Default is the "
+                         "highest one defined: envelope > profile > duty_segments")
     ap.add_argument("--list", action="store_true", help="list the database and exit")
     ap.add_argument("--check-datasheets", action="store_true",
                     help="verify each db entry against the datasheet it cites, and exit")
@@ -150,6 +158,12 @@ def main(argv=None):
         if not apps:
             print("    none found in", db.APPLICATION_DIR)
         for name, kind in apps:
+            print(f"     {name}" + ("  (example)" if kind == "example" else ""))
+        envs = db.list_envelopes()
+        print("envelopes:")
+        if not envs:
+            print("    none found in", db.ENVELOPE_DIR)
+        for name, kind in envs:
             print(f"     {name}" + ("  (example)" if kind == "example" else ""))
         return 0
 
@@ -178,6 +192,26 @@ def main(argv=None):
         joint.bus_voltage = args.bus
     if args.surface_limit is not None:
         joint.max_surface_temp = args.surface_limit
+
+    if args.envelope is not None:
+        try:
+            env, _ = db.load_envelope_with_audit(args.envelope)
+        except FileNotFoundError as e:
+            ap.error(str(e))
+        # Same cross-check the application loader applies: a joint-referred
+        # envelope only describes the drivetrain it was captured on.
+        j_ratio = float(joint.ratio) if joint.ratio is not None else 1.0
+        if abs(env.ratio - j_ratio) > 1e-6 * max(1.0, abs(j_ratio)):
+            ap.error(f"envelope '{args.envelope}' was captured at ratio "
+                     f"{env.ratio:g} but application '{args.joint}' declares "
+                     f"{j_ratio:g}; the capture does not describe this drivetrain")
+        joint.envelope = env
+    if args.motion_source is not None:
+        joint.motion_source = args.motion_source
+    try:
+        joint.active_motion_source()
+    except ValueError as e:
+        ap.error(str(e))
 
     for s in args.set:
         if "=" not in s:

@@ -96,6 +96,13 @@ REGISTRY: Dict[str, Dict[str, Tuple[float, float]]] = {
     "viscous": {"N.m/(rad/s)": (1.0, 0.0)},
     "count": {"-": (1.0, 0.0), "": (1.0, 0.0)},
     "currency": {"USD": (1.0, 0.0), "$": (1.0, 0.0)},
+    # A sample rate is a plain frequency, NOT an angular velocity. They share
+    # the symbol "Hz" and angular_velocity maps it to 2*pi rad/s, which is right
+    # for a shaft and badly wrong for a logger. Keeping them separate is what
+    # makes convert() reject `"sample_rate": {"units": "rpm"}` instead of
+    # quietly turning 360 Hz into 37.7 of something.
+    "frequency": {"Hz": (1.0, 0.0), "kHz": (1e3, 0.0), "mHz": (1e-3, 0.0),
+                  "1/s": (1.0, 0.0), "sps": (1.0, 0.0)},
 }
 
 
@@ -286,6 +293,23 @@ PROFILE_DIMENSIONS = {
     "max_accel": "angular_accel",
     "max_jerk": "angular_jerk",
     "dwell_time": "time",
+}
+
+# Envelope files. The scalar fields only -- the bulk arrays (cells, boundary,
+# window segments) declare their units once alongside the array, following the
+# duty_segments_units precedent, because a per-value object on 400 rows would be
+# unreadable and undiffable.
+ENVELOPE_DIMENSIONS = {
+    "duration": "time",
+    "total_time": "time",
+    "found_at": "time",
+    "sample_rate": "frequency",
+    "rms_torque": "torque",
+    "binned_below": "torque",
+    "ratio": "dimensionless",
+    "dt": "time",
+    "width": "time",
+    "worst_change": "torque",
 }
 
 # Fields whose unstated unit is NOT the canonical SI one. Joint angles are the

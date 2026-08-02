@@ -1,0 +1,88 @@
+{
+  "name": "Elbow (envelope example)",
+  "kind": "revolute",
+  "n_actuators": 2,
+
+  "_WHAT_THIS_IS": [
+    "The same joint as elbow_example, sized against a MEASURED session instead",
+    "of a commanded profile.",
+    "",
+    "A profile is a designer's guess at one simple move, repeated forever. A",
+    "real joint runs a mix of tasks, payloads and idle periods whose torque",
+    "distribution looks nothing like one trapezoid, so sizing against the guess",
+    "is over-confident exactly where it matters most: thermal.",
+    "",
+    "Both blocks are present on purpose. The envelope wins -- see the",
+    "precedence note below -- and the report names the profile as superseded",
+    "rather than silently ignoring it. Delete the 'envelope' key, or set",
+    "motion_source to 'profile', and this file falls straight back to the",
+    "commanded-motion path with no other edits."
+  ],
+
+  "strict_units": false,
+
+  "ratio": {"value": 1.0, "units": "-", "source": "vendor",
+            "note": "actuators mounted coaxially on the joint, no extra reduction"},
+  "ratio_type": "direct",
+
+  "load": {
+    "total_mass_at_CG":            {"value": 1.5,  "units": "kg",
+                         "note": "whole moving assembly: link, bracket, hardware and anything carried"},
+    "distance_joint_axis_to_CG":   {"value": 280,  "units": "mm",
+                         "note": "joint axis to the CG. Counts linearly for gravity and SQUARED for inertia"},
+    "moment_of_inertia_around_CG": {"value": 350,  "units": "kg.cm^2",
+                         "note": "about the CG, NOT about the joint axis -- the parallel-axis transfer m*d^2 is added for you"},
+    "joint_plane_tilt": {"value": 0,    "units": "deg"},
+    "gravity_angle":    {"value": -90,  "units": "deg",
+                         "note": "joint angle at which the CG points straight DOWN. Same frame as the envelope's sign_convention"},
+    "external_torque":  {"value": 0,    "units": "N.m"},
+    "joint_friction":   {"value": 0.15, "units": "N.m"}
+  },
+
+  "_MOTION_PRECEDENCE": [
+    "Three ways to declare how this joint moves, highest wins:",
+    "",
+    "  envelope  > profile > duty_segments",
+    "",
+    "An envelope is a record of what the joint ACTUALLY did, so it supersedes a",
+    "profile, which is a guess at one simple move; a profile in turn supersedes",
+    "duty_segments, which is a hand-written segment list with no solver behind",
+    "it. Declaring several is fine and expected: the superseded blocks are kept",
+    "so that removing the higher one falls back rather than erroring.",
+    "",
+    "Set motion_source to pin one explicitly -- envelope | profile |",
+    "duty_segments | auto (the default). Pinning a block you have not defined",
+    "is an error, not a silent fallback, because the whole point of pinning is",
+    "to be certain which input you are looking at. --motion-source on the",
+    "command line overrides this for a single run, which is how you A/B the",
+    "commanded profile against the measured envelope without editing anything."
+  ],
+  "motion_source": "auto",
+
+  "envelope": {"file": "elbow_pick_place_example",
+               "note": "one hour of pick-and-place on cell 3, three payload variants"},
+
+  "profile": {
+    "_note": "SUPERSEDED by the envelope above; kept so this file falls back cleanly",
+    "stroke_start":   {"value": -45,  "units": "deg"},
+    "stroke_end":     {"value": 45,   "units": "deg"},
+    "max_velocity":   {"value": 260,  "units": "rpm"},
+    "max_accel":      {"value": 40,   "units": "rad/s^2"},
+    "max_jerk":       {"value": 800,  "units": "rad/s^3"},
+    "dwell_time":     {"value": 0.35, "units": "s"},
+    "samples": 160
+  },
+
+  "bus_voltage": {"value": 52, "units": "V",
+                  "note": "13S lithium pack, nominal 48.1 V, 54.6 V at full charge"},
+  "accept_overvoltage": false,
+
+  "T_ambient":   {"value": 40,  "units": "degC",
+                  "note": "inside the arm shell, NOT room temperature"},
+  "max_surface_temp": {"value": 48, "units": "degC",
+                       "note": "housing is reachable by the operator; set from your own safety case"},
+  "mass_budget": {"value": 800, "units": "g"},
+
+  "mounting": "bolted_metal",
+  "require_backdrivable": true
+}

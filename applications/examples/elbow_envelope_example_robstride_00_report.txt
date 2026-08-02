@@ -1,0 +1,222 @@
+==============================================================================
+  ELBOW (ENVELOPE EXAMPLE)  <-  2 x RobStride 00  (RobStride Dynamics)
+==============================================================================
+
+CONFIGURATION
+  actuators in parallel : 2
+  actuator gear ratio   : 10:1 (planetary_1stage, eff 0.94)
+  post-actuator ratio   : 1:1 (direct, eff 1.00)
+  total reduction       : 10:1
+  bus voltage           : 52.0 V  (application; actuator accepts 24-60 V)
+  surface temp limit    : 48 degC (user safety)
+  ambient (internal)    : 40 degC     mounting: bolted_metal
+  actuator datasheet    : RobStride RS00 User Manual (rev 260713, doc v1.0, 2025-11-25)
+  db entry revised      : 2026-07-29
+  actuation mass        : 620 g
+  actuation cost        : $250
+
+JOINT CAPABILITY (all n actuators, at the joint)
+  peak torque           :    27.94 N.m
+  continuous torque     :     9.20 N.m   (thermal, at 40 degC ambient)
+  no-load speed         :      315 rpm  (33.0 rad/s)
+
+APPLICATION ENVELOPE  (measured, not commanded)
+  envelope              : Elbow pick-and-place, cell 3
+  provenance            : derived, +/-5%  (torque from commanded_current)
+  captured              : 2026-07-28  on arm-004 / elbow, fw rs-fw 1.4.2
+  session length        :     1.00 hr   (coverage 100.0%, no gaps)
+  occupancy             : 601 cells, 200 excursions kept verbatim, 7 worst sequences
+  source log            : elbow_2026-07-28.csv  sha256 9f2c1a4b0000...  (3,600,000 rows)
+  despiked              : median over 5 samples (5 ms); 2,619 materially changed, worst by 38.1 N.m
+  supersedes            : profile  (kept in the application file; set motion_source to use one instead)
+
+  WHAT EACH ARTIFACT IS AUTHORITATIVE FOR
+    occupancy   : cycle-mean loss, case temperature, RMS current
+    boundary    : the reached torque-speed outline (raw samples, unbinned)
+    excursions  : every event above the cut, verbatim, with its duration
+    sequences   : peak winding temperature and burst endurance
+    percentiles : the peak torque and speed demands
+    A peak winding temperature is NOT derived from the occupancy record:
+    it has no time ordering, so any ripple read off it would be an
+    artefact of how the cells happened to be sorted.
+
+  TIME IN REGIME
+    holding (|w| < 0.05 rad/s)  70.2%   mean |tau|  2.08 N.m
+    driving                     14.8%   mean |tau|  6.50 N.m
+    regenerating                15.1%   mean |tau|  6.12 N.m
+
+  SUSTAINED JOINT TORQUE BY AVERAGING WINDOW  (RMS, N.m)
+         0.5 s   11.19             1 s    8.66
+           2 s    8.26             5 s    7.57
+          10 s    6.87            30 s    5.65
+         100 s    5.16           300 s    4.91
+        1000 s    4.76          1800 s    4.68
+    this actuator's case constant is 12 min, so the window that
+    sets its thermal verdict carries 4.76 N.m at the joint
+
+  EXTREMES AND EXCURSIONS
+    peak torque    p99  14.40   p99.9  17.47   max  20.58 N.m   (sizing uses p99.9)
+    peak speed     p99     66   p99.9     67   max     67 rpm
+    before despiking the log peaked at 33.99 N.m; the difference was
+    isolated single-sample noise, not a sustained event
+
+    excursions above    events   total time     mean    longest
+      p95    10.13 N.m    2214      180.0 s     0.08 s     0.20 s
+      p99    14.40 N.m     258       36.0 s     0.14 s     0.16 s
+      p99.9  17.47 N.m     184        3.6 s     0.02 s     0.04 s
+
+    worst excursions (verbatim, never binned)
+      t=  1632.7 s     12 ms    20.58 N.m at    12 rpm
+      t=  1442.7 s     12 ms    20.25 N.m at    17 rpm
+      t=   343.3 s     12 ms    20.22 N.m at    17 rpm
+      t=  1217.8 s     12 ms    20.18 N.m at     7 rpm
+
+OCCUPANCY AS A DUTY CYCLE (per actuator, at its output shaft)
+  session length        : 3600 s
+  RMS current           :     1.64 A_rms
+  cell torque range     :     9.77 N.m  (a cell average, NOT the peak -- see EXTREMES)
+  cell speed range      :       67 rpm
+
+CRITERIA
+        criterion                    demand  capability  margin  confidence
+  --------------------------------------------------------------------------
+  PASS  Peak torque                    17.5        27.9   1.60x  derived
+        2 x 13.97 N.m at actuator output, x1.00 joint ratio; demand is the p99.9 of 1.00 hr measured, max was 20.58 N.m (184 excursions totalling 3.6 s, longest 0.04 s)
+  PASS  Speed at load                     7        33.3   4.76x  estimated
+        needs 67 rpm at 2.61 N.m/act; bus 52 V, no-load 341 rpm at output
+  PASS  Torque-speed envelope          10.3          14   1.36x  estimated
+        tightest point: 10.29 N.m at 12 rpm (actuator output); checked against the measured boundary and all 200 stored excursions individually
+  PASS  Thermal, session mean          16.8         105   6.26x  estimated
+        settled winding 57 degC, case 54 degC, limit 145 degC at 40 degC ambient; mean loss 4.6 W/actuator over the whole session. Both follow from that cycle-average loss, which is the only order-free quantity the occupancy record carries; any within-cycle peak read off it would be an artefact of the cell sort. See the worst-sequence check.
+  PASS  Thermal, worst sequence          10         inf   2.00x  estimated
+        worst 10 s of the session (at t=2184 s, RMS 6.61 N.m at the joint, selected by the 10 s kernel; this actuator's winding constant is 10.7 s), starting from the 54 degC case the session mean produces: survives, and would be sustainable indefinitely even repeated. Repeated forever it would settle at 80 degC.
+  PASS  Continuous torque (RMS)        2.42         4.6   1.90x  estimated
+        duty RMS current 1.64 A_rms vs continuous limit 3.65 A_rms; over this actuator's 12 min case constant the session's worst sustained joint torque was 4.76 N.m
+  PASS  Drive current limit            7.43          11   1.47x  derived
+        from the true measured peak 20.58 N.m at the joint, not a percentile: an overcurrent fault is a threshold, so the briefest spike trips it. Before despiking the log peaked at 33.99 N.m
+  PASS  Inertia ratio (fyi)           0.153     0.00185   0.01x  estimated
+        reflected/load = 0.012 (reflected 1.85 g.m^2, load 152.60 g.m^2); rotor inertia is small next to the load (good for a QDD joint)
+  PASS  Mass budget                    0.62         0.8   1.29x  vendor
+        2 x 310 g = 620 g
+  PASS  Bus voltage                      52          60   1.00x  vendor
+        52.0 V from the application; actuator accepts 24-60 V, +8% vs the 48 V nominal
+  FAIL  Surface temp (safety)            14           8   0.57x  estimated
+        housing settles at 54 degC vs a 48 degC touch limit (40 degC ambient). Lumped housing temperature: real surfaces have hot spots near the stator, so treat this as optimistic and verify by measurement.
+  PASS  Backdrive torque              0.222        1.75   7.86x  estimated
+        est. 0.22 N.m to backdrive at the joint; target under 1.75 N.m (10% of peak)
+  --------------------------------------------------------------------------
+
+  VERDICT: FAIL    (binding constraint: Surface temp (safety), margin 0.57x)
+
+THERMAL DETAIL (per actuator)
+  within-cycle ripple   :    n/a   -- the occupancy record has no time ordering
+  settled winding temp  :   56.8 degC (limit 145)
+  settled case temp     :   54.0 degC
+  mean heat dissipation :   4.62 W
+  time constants        : winding 11 s, case 720 s
+  duty cycles simulated : 3  (converged)
+
+  binding sequence      : the worst 10 s of the session, at t=2184 s
+                          RMS 6.61 N.m at the joint; selected by the 10 s kernel,
+                          and this actuator's winding constant is 10.7 s
+  case temp at onset    :   54.0 degC  (the session mean, from the occupancy record)
+  running it from there : never reaches the winding limit
+  if it repeated forever:   79.9 degC  (a bound, not a prediction -- a burst is not a duty cycle)
+
+UNIT AUDIT  (as written in the input files -> canonical SI)
+     dims                       =        0.057 m              <- [57, 57, 51] mm (from field name)
+     mass                       =         0.31 kg             <- 0.31 kg
+     gear_ratio                 =           10 -              <- 10.0 -
+     gear_eff                   =         0.94 -              <- 0.94 -
+     kt_sat_derate              =        0.863 -              <- 0.863 -
+     V_bus_nom                  =           48 V              <- 48.0 V
+     V_bus_min                  =           24 V              <- 24.0 V
+     V_bus_max                  =           60 V              <- 60.0 V
+     tau_cont_out_spec          =            5 N.m            <- 5.0 N.m
+     tau_peak_out_spec          =           14 N.m            <- 14.0 N.m
+     T_winding_max              =          145 degC           <- 145.0 degC
+     Ke                         =    0.0907183 V_rms_LL/(rad/s) <- 9.5 Vrms/kRPM (from field name)
+     I_cont_peak_amp            =          4.7 A_pk           <- 4.7 A_pk
+     I_peak_peak_amp            =         15.5 A_pk           <- 15.5 A_pk
+     tn_curve                   =          315 rpm_output     <- 8 pts, 100-315 rpm at 48 V
+     overload_curves[rotating]  =           14 N.m            <- 7 pts, 6.0-14.0 N.m, 3-285 s at 100 rpm, 25 degC
+     ratio                        =            1 -              <- 1.0 -
+     mass_budget                  =          0.8 kg             <- 800 g
+     T_ambient                    =           40 degC           <- 40 degC
+     bus_voltage                  =           52 V              <- 52 V
+     max_surface_temp             =           48 degC           <- 48 degC
+     total_mass_at_CG             =          1.5 kg             <- 1.5 kg
+     distance_joint_axis_to_CG    =         0.28 m              <- 280 mm
+     moment_of_inertia_around_CG  =        0.035 kg.m^2         <- 350 kg.cm^2
+     joint_plane_tilt             =            0 rad            <- 0 deg
+     gravity_angle                =      -1.5708 rad            <- -90 deg
+     external_torque              =            0 N.m            <- 0 N.m
+     joint_friction               =         0.15 N.m            <- 0.15 N.m
+     stroke_start                 =    -0.785398 rad            <- -45 deg
+     stroke_end                   =     0.785398 rad            <- 45 deg
+     max_velocity                 =      27.2271 rad/s          <- 260 rpm
+     max_accel                    =           40 rad/s^2        <- 40 rad/s^2
+     max_jerk                     =          800 rad/s^3        <- 800 rad/s^3
+     dwell_time                   =         0.35 s              <- 0.35 s
+     envelope                     =         3600 s              <- Elbow pick-and-place, cell 3 (601 cells, 7 windows)
+
+ASSUMED PARAMETERS  (defaults, not vendor data)
+  - C_c = 237.15 J/K  (estimated, +/-40%)  # remaining mass as aluminium, c=900 J/kgK
+  - C_w = 17.9025 J/K  (estimated, +/-40%)  # copper taken as 15% of module mass, c=385 J/kgK
+  - J_rotor = 9.25356e-06 kg.m^2  (estimated, +/-60%)  # rotor ~30% of module mass, radius of gyration ~0.35*R_housing
+  - L_phase = 0.000581382 H  (estimated, +/-40%)  # L = 13.2 * lambda / I_peak^2, calibrated on RobStride T-N curves (+/-13% on those); sets where the envelope rolls off -- measure it, or supply a tn_curve
+  - R_phase = 0.490365 ohm  (estimated, +/-45%)  # back-solved from an assumed 84% rated-point efficiency with 60% of loss in copper; MEASURE THIS (4-wire, line-to-line/2)
+  - Rth_ca = 3.03432 degC/W  (estimated, +/-50%)  # natural convection over 181 cm^2 housing, h=10 W/m^2K, mounting='bolted_metal' factor 0.55
+  - Rth_wc = 0.6 degC/W  (estimated, +/-40%)  # slot-to-housing, mass-scaled; calibrated against vendor overload-endurance tables (4 actuators, +/-25%)
+  - friction_torque_rotor = 0.010444 N.m  (estimated, +/-70%)  # 2% of rated rotor torque
+  - iron_loss_ref_W = 4.06206 W  (estimated, +/-70%)  # iron loss at rated speed taken as 25% of rated copper loss
+  - viscous_rotor = 1e-05 N.m/(rad/s)  (guess, +/-100%)
+
+SENSITIVITY  --  assumptions that change a verdict within their error band
+  R_phase:
+      Surface temp (safety): FAIL -> MARGINAL at R_phase x0.55
+  Rth_ca:
+      Surface temp (safety): FAIL -> PASS at Rth_ca x0.50
+
+  MEASURE THESE FIRST: R_phase, Rth_ca
+
+TORQUE-SPEED ENVELOPE
+  source   : measured curve (vendor), 8 points, 108-341 rpm
+  WARNING  : curve was measured at 48 V, rescaled to 52 V. Speed axis scaled by voltage ratio; torque axis assumed unchanged.
+  verdicts use the measured curve; the model below is an independent check
+
+     rpm   measured     model     delta
+     108      14.00     13.97     -0.2%
+     162      12.00     13.52    +12.6%
+     217       9.50      9.86     +3.8%
+     249       7.60      7.89     +3.9%
+     271       6.40      6.66     +4.0%
+     298       4.40      5.14    +16.7%
+     325       2.00      3.56    +77.9%  <-- 
+     341       0.50      2.50   +400.8%  <-- 
+  RMS disagreement: 9%   (over points above 15% of peak torque; the near-no-load tail is excluded as both curves approach zero there)
+
+OVERLOAD ENDURANCE CROSS-CHECK (rotating)
+  source   : measured (vendor), 7 points, +/-15%
+  vendor test conditions: 100 rpm output, 25 degC ambient, mounting 'heatsunk'
+  the model is run at those conditions, NOT this application's
+
+     N.m     vendor      model    ratio
+     6.0       285s     1755.0    6.16x  <-- 
+     7.0        94s      609.9    6.49x  <-- 
+     8.0        53s      321.0    6.06x  <-- 
+    10.0        20s       99.7    4.99x  <-- 
+    12.0        10s       29.6    2.96x  <-- 
+    13.0         7s       19.1    2.73x  <-- 
+    14.0         3s       13.7    4.55x  <-- 
+  log-RMS disagreement: 1.56   (log space: endurance spans three decades, so a 2x miss counts the same at 3 s and at 1400 s)
+
+  The model OUTLASTS the vendor's measurement by 4.6x on average, i.e. it
+  is OPTIMISTIC: a duty cycle sized against it will overheat sooner than
+  this report implies. Treat the continuous-torque figure above as an
+  upper bound, and prefer the vendor's rated torque (5.0 N.m) until R_phase
+  is measured.
+
+VENDOR DATA CROSS-CHECK
+  rated torque: model 4.85 N.m vs spec 5.00 N.m (-3%)
+  peak torque:  model 13.97 N.m vs spec 14.00 N.m (-0%)
