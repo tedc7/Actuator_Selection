@@ -24,6 +24,7 @@ anything drawn before the last fit() lands against a stale scale.
 """
 
 from __future__ import annotations
+import bisect
 import math
 import re
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -54,7 +55,29 @@ PHASE_STYLE = [
     ("Move_Neg_Decel", "#7DD3E8"),   # teal,   light -- upper band
     ("Cruise",         "#B45309"),   # at max_velocity, zero acceleration
     ("Dwell",          "#3a3a3a"),   # dwell_time rest, holding against gravity
+    # An envelope has no commanded trajectory to classify, so the split that
+    # carries information is what the joint was DOING: holding against gravity,
+    # driving the load, or being driven by it.
+    ("Env_Hold",       "#3a3a3a"),
+    ("Env_Drive_Pos",  "#7C3AED"),
+    ("Env_Drive_Neg",  "#0E7490"),
+    ("Env_Regen_Pos",  "#C4A5F5"),
+    ("Env_Regen_Neg",  "#7DD3E8"),
 ]
+
+# The occupancy density layer. A desaturated GREEN, and capped well short of
+# opaque: this sits under the lines and markers that carry the actual verdict,
+# so at full strength it has to remain something you can read a thin dark
+# polyline and a 3 px marker against. A dark slate ramped to 0.8 did not -- the
+# busiest cells swallowed the curves crossing them.
+#
+# Green also keeps it clear of every series already spoken for on chart 1:
+# SERIES[0] blue (the voltage envelope), SERIES[2] teal-green is reserved for
+# the continuous line but drawn as a bright dashed rule, and #D55E00 is the
+# alert colour.
+HEAT_INK = "#2E8B57"
+HEAT_MAX_OPACITY = 0.42
+ALERT = "#D55E00"        # an excursion outside the actuator's envelope
 
 
 def _esc(s) -> str:
@@ -276,6 +299,75 @@ class Plot:
         if label:
             self.legend.append((label, colour, marker))
 
+    def heat(self, boxes, colour=HEAT_INK, label=None,
+             opacity_max=HEAT_MAX_OPACITY):
+        """
+        Time-occupancy density: one rect per cell, in DATA coordinates.
+
+        boxes: [(x_lo, x_hi, y_lo, y_hi, weight)].
+
+        Opacity is LOG-scaled in the weight, which is not a stylistic choice.
+        Occupancy spans four or more decades -- thousands of seconds holding
+        against gravity, milliseconds at peak torque -- so a linear ramp renders
+        the hold cell solid and everything else invisible, which is exactly
+        backwards: the rare cells are the interesting ones.
+        """
+        data = [b for b in boxes if b[4] > 0]
+        if not data:
+            return
+        for x_lo, x_hi, y_lo, y_hi, _ in data:
+            self.fit([x_lo, x_hi], [y_lo, y_hi])
+        lo = min(b[4] for b in data)
+        hi = max(b[4] for b in data)
+        span = math.log10(hi / lo) if hi > lo > 0 else 0.0
+
+        def draw():
+            out = []
+            for x_lo, x_hi, y_lo, y_hi, w in data:
+                frac = (math.log10(w / lo) / span) if span > 0 else 1.0
+                op = 0.06 + (opacity_max - 0.06) * frac
+                x0, x1 = self.px(x_lo), self.px(x_hi)
+                y0, y1 = self.py(y_hi), self.py(y_lo)
+                wpx, hpx = max(abs(x1 - x0), 1.2), max(abs(y1 - y0), 1.2)
+                out.append(f'<rect x="{min(x0, x1):.2f}" y="{min(y0, y1):.2f}" '
+                           f'width="{wpx:.2f}" height="{hpx:.2f}" '
+                           f'fill="{colour}" opacity="{op:.3f}" stroke="none"/>')
+            return "".join(out)
+        self._queue.append(draw)
+        if label:
+            self.legend.append((label, colour, "square"))
+
+    def heat_scale(self, lo: float, hi: float, unit: str = "s",
+                   colour=HEAT_INK, opacity_max=HEAT_MAX_OPACITY):
+        """
+        A labelled gradient strip for the density layer.
+
+        Without one a density map is decorative: the reader can see that some
+        cells are darker but has no idea whether that means twice as long or a
+        thousand times as long.
+        """
+        def draw():
+            n = 22
+            x0 = self.ml + self.pw - 150
+            # Leave room above the strip for its own caption: at mt + 8 the
+            # caption's ascenders sat on the plot's top edge and were clipped.
+            y0 = self.mt + 22
+            out = [f'<text x="{x0:.1f}" y="{y0 - 5:.1f}" font-size="9.5" '
+                   f'fill="{MUTED}">time in cell</text>']
+            for i in range(n):
+                frac = i / (n - 1)
+                op = 0.06 + (opacity_max - 0.06) * frac
+                out.append(f'<rect x="{x0 + i * 6:.1f}" y="{y0:.1f}" '
+                           f'width="6.2" height="8" fill="{colour}" '
+                           f'opacity="{op:.3f}" stroke="none"/>')
+            out.append(f'<text x="{x0:.1f}" y="{y0 + 18:.1f}" font-size="9" '
+                       f'fill="{MUTED}">{_fmt(lo)} {unit}</text>')
+            out.append(f'<text x="{x0 + n * 6:.1f}" y="{y0 + 18:.1f}" '
+                       f'font-size="9" fill="{MUTED}" text-anchor="end">'
+                       f'{_fmt(hi)} {unit}</text>')
+            return "".join(out)
+        self._queue.append(draw)
+
     def marker(self, x, y, colour, label=None, r=5.5):
         self.fit([x], [y])
 
@@ -410,8 +502,16 @@ class Plot:
 # Duty-cycle family
 # ---------------------------------------------------------------------------
 
-def _is_idle(seg) -> bool:
-    return abs(seg[2]) < 1e-6
+def _is_idle(seg, threshold: float = 1e-6) -> bool:
+    """
+    Stationary enough to count as rest.
+
+    An authored profile's dwell is exactly zero speed, so the default threshold
+    is essentially exact equality. A MEASURED session never is: a servo holding
+    position still dithers, so an envelope needs a small physical threshold or
+    every cell reads as "moving" and the whole rest/work split collapses.
+    """
+    return abs(seg[2]) < threshold
 
 
 def duty_variants(ev: Evaluation, rest_scales=(0.0, 0.5, 1.0, 2.0)):
@@ -423,6 +523,10 @@ def duty_variants(ev: Evaluation, rest_scales=(0.0, 0.5, 1.0, 2.0)):
     Returns [(label, segments, duty_factor, is_nominal)] where segments are
     per-actuator output, as simulate_duty expects.
 
+    Under an envelope the same operation means something different and is
+    labelled accordingly: you cannot scale rest you did not author, but you can
+    run the captured task more or less often, so the family sweeps THROUGHPUT.
+
     Note that "rest" is not free: on a gravity-loaded joint the actuator still
     draws holding current at zero speed, so extra rest reduces heating but
     never to zero.
@@ -430,8 +534,17 @@ def duty_variants(ev: Evaluation, rest_scales=(0.0, 0.5, 1.0, 2.0)):
     segs = ev.duty_segments
     if not segs:
         return []
-    moving = [s for s in segs if not _is_idle(s)]
-    idle = [s for s in segs if _is_idle(s)]
+
+    env = ev.extras.get("envelope")
+    thresh = 1e-6
+    if env is not None:
+        # 1% of the working speed: below that the joint is holding, not moving.
+        p99 = env.extremes.w("p99")
+        thresh = max(p99 * 0.01, 1e-4) if p99 > 0 else 0.05
+        thresh = max(thresh, 0.01)
+
+    moving = [s for s in segs if not _is_idle(s, thresh)]
+    idle = [s for s in segs if _is_idle(s, thresh)]
     t_move = sum(s[0] for s in moving)
     t_idle = sum(s[0] for s in idle)
 
@@ -465,7 +578,7 @@ def duty_variants(ev: Evaluation, rest_scales=(0.0, 0.5, 1.0, 2.0)):
         # keep the original ordering: moves and rests interleaved as authored
         merged = []
         for s in segs:
-            if _is_idle(s):
+            if _is_idle(s, thresh):
                 if k > 0:
                     merged.append((s[0] * k, s[1], s[2]))
             else:
@@ -474,7 +587,18 @@ def duty_variants(ev: Evaluation, rest_scales=(0.0, 0.5, 1.0, 2.0)):
             merged = list(segs) + list(new_idle)
 
         nominal = (abs(k - 1.0) < 1e-9) and not synth
-        if k == 0:
+        if env is not None:
+            # Scaling the holding time IS scaling throughput: the same captured
+            # work, done more or less often per hour. That is the knob a plant
+            # manager has, where "rest time" is one the capture already fixed.
+            rate = (1.0 / k) if k > 0 else float("inf")
+            if k == 0:
+                label = f"back-to-back, no idle ({df*100:.0f}% active)"
+            elif nominal:
+                label = f"as captured ({df*100:.0f}% active)"
+            else:
+                label = f"{rate:g}x throughput ({df*100:.0f}% active)"
+        elif k == 0:
             label = f"no rest ({df*100:.0f}% duty)"
         elif nominal:
             label = f"as specified ({df*100:.0f}% duty)"
@@ -489,6 +613,217 @@ def duty_variants(ev: Evaluation, rest_scales=(0.0, 0.5, 1.0, 2.0)):
 # ---------------------------------------------------------------------------
 # Chart 1: torque-speed envelope, single configuration
 # ---------------------------------------------------------------------------
+
+def _plot_window_ladder(p: "Plot", ev: Evaluation, env, gain, lg, a, j) -> None:
+    """
+    The session's own endurance curve: one real excerpt per timescale.
+
+    Each stored window plots at (its duration, its RMS-equivalent joint torque)
+    -- the same reduction the synthetic duty variants use, so no new machinery,
+    but every point is a stretch of the log that actually happened rather than a
+    hypothetical rest-scaling. The ladder falls monotonically, which is the
+    measured analogue of the vendor's overload curve sitting on the same axes.
+    """
+    xs, ys, labs = [], [], []
+    for w in env.windows:
+        if w.duration <= 0 or not w.segments:
+            continue
+        # Referred to one actuator's output, the way the reference lines are.
+        per_act = []
+        for dt, tau_j, om_j in w.segments:
+            tau_a, om_a = j.actuator_output_demand(tau_j, om_j)
+            per_act.append((dt, tau_a, om_a))
+        i_rms = phys.rms_current_of_duty(a, per_act,
+                                         t_est=float(a.T_winding_max))
+        tau_rms = abs(a.torque_out(i_rms, t_magnet=float(a.T_winding_max)))
+        if tau_rms <= 0:
+            continue
+        xs.append(lg(w.duration))
+        ys.append(tau_rms * gain)
+        labs.append(w)
+    if not xs:
+        return
+
+    p.line(xs, ys, SERIES[1], "measured session (RMS over each window)",
+           width=2.0, opacity=0.85)
+
+    binding = ev.extras.get("binding_window")
+    inside_x, inside_y, over_x, over_y = [], [], [], []
+    for x, y, w in zip(xs, ys, labs):
+        cap = ev.extras.get("tau_cont_cap_joint") or 0.0
+        (over_x if (cap and y > cap) else inside_x).append(x)
+        (over_y if (cap and y > cap) else inside_y).append(y)
+    if inside_x:
+        p.scatter(inside_x, inside_y, SERIES[1], None, r=4.6, opacity=0.95,
+                  marker="square")
+    if over_x:
+        p.scatter(over_x, over_y, ALERT,
+                  "above the continuous rating at that timescale",
+                  r=5.2, opacity=0.98, marker="square")
+
+    for x, y, w in zip(xs, ys, labs):
+        is_binding = binding is not None and abs(w.duration - binding.duration) < 1e-9
+        if is_binding:
+            p.text_at(x, y, f"  binding: {w.duration:.0f} s at "
+                            f"{y:.2f} N.m RMS", SERIES[1], dy=-10, size=10,
+                      weight="600")
+        else:
+            p.text_at(x, y, f"  {w.duration:.0f}s", MUTED, dy=-8, size=9)
+
+
+def _overlay_envelope(p: "Plot", ev: Evaluation, env, j, v_bus, a) -> None:
+    """
+    The measured session over the actuator's capability, in four layers.
+
+    Order matters and is bottom-up: density first so it sits under everything,
+    then the measured outline, then the individual excursions on top. The
+    excursion layer is what guarantees the chart cannot hide a critical point
+    behind the shading -- a 4 ms spike is one cell of negligible occupancy and
+    would be invisible in the density alone, but it is exactly the point that
+    trips a drive.
+
+    Magnitudes, not signed values, so this stays comparable with the T-N curve
+    it exists to test. The signed picture -- where regeneration lives -- is a
+    separate chart.
+    """
+    ratio = max(float(j.ratio), 1e-9)
+
+    # 1. occupancy density, from the stored cell grid, clipped to the outline
+    #
+    # The cells are quantile-spaced, which puts narrow bins where samples are
+    # dense and ONE very wide bin over the sparse high-torque tail -- here a
+    # single cell spanning 10.2 to 17.5 N.m. Drawn at face value that top bin
+    # tiles across every speed slice and the density reads as a flat-topped
+    # rectangle, hiding the very shape the outline is there to show. A cell is
+    # only a bucket of (torque, speed) values anyway, not a claim that the joint
+    # visited every corner of it, so trimming each rect to the measured outline
+    # at its own speed is both more honest and what the eye expects.
+    bw = [w for w, _ in env.boundary]
+    bt = [t for _, t in env.boundary]
+
+    def ceiling_at(om_abs: float) -> float:
+        """Measured outline torque at this speed; +inf when there is none."""
+        if not bw:
+            return float("inf")
+        i = bisect.bisect_left(bw, om_abs)
+        if i <= 0:
+            return bt[0]
+        if i >= len(bw):
+            return bt[-1]
+        # linear between the two bracketing outline points
+        f = (om_abs - bw[i - 1]) / max(bw[i] - bw[i - 1], 1e-12)
+        return bt[i - 1] + f * (bt[i] - bt[i - 1])
+
+    edges_t, edges_w = env.torque_edges, env.speed_edges
+    boxes = []
+    for c in env.cells:
+        if c.seconds <= 0:
+            continue
+        if not (0 <= c.ti < len(edges_t) - 1 and 0 <= c.si < len(edges_w) - 1):
+            # An unbinned outlier cell. Skipped here on purpose: layer 3 draws
+            # every excursion individually, sized by duration and coloured for
+            # whether it cleared the actuator's envelope, which says far more
+            # than a density hairline. Drawing it in both places also left a
+            # scatter of shading floating above the outline, which is what made
+            # the density read as a box rather than as a region under a curve.
+            continue
+        t_lo, t_hi = sorted((abs(edges_t[c.ti]), abs(edges_t[c.ti + 1])))
+        w_lo, w_hi = sorted((abs(edges_w[c.si]), abs(edges_w[c.si + 1])))
+
+        # Trim to the outline, COLUMN BY COLUMN. A single quantile cell can span
+        # several rad/s, and capping it at one ceiling for its whole width just
+        # reproduces the flat top at a different height. Splitting it into
+        # narrow columns and clipping each to the outline above it is what makes
+        # the density's upper edge follow the curve.
+        span = w_hi - w_lo
+        n_col = 1 if span <= 1e-9 else min(24, max(1, int(span / 0.15)))
+        col_w = span / n_col
+        for k in range(n_col):
+            c_lo = w_lo + k * col_w
+            c_hi = c_lo + col_w if n_col > 1 else w_hi
+            cap = max(ceiling_at(c_lo), ceiling_at(c_hi))
+            top = min(t_hi, cap)
+            bot = t_lo
+            if top <= bot:
+                # This column sits entirely above the outline: keep a hairline
+                # at the cell's own torque rather than dropping its time.
+                bot = top = min(abs(c.tau), cap)
+            # The cell's dwell is not divided among its columns: each column
+            # shows the same cell's occupancy, so splitting the seconds would
+            # make a wide cell read as lighter than a narrow one holding the
+            # same time, which is a shading artefact of the grid rather than
+            # anything about the robot.
+            boxes.append((c_lo / ratio * RPM, c_hi / ratio * RPM,
+                          bot, top, c.seconds))
+    if boxes:
+        p.heat(boxes, HEAT_INK, "time spent here (log shaded)")
+        p.heat_scale(min(b[4] for b in boxes), max(b[4] for b in boxes), "s")
+
+    # 2. the measured outline: what the joint actually reached, filled under it
+    #    the same way the actuator's own capability envelope is, so the two
+    #    read as the same kind of object -- a region, not a line.
+    if env.boundary:
+        bx = [w / ratio * RPM for w, _ in env.boundary]
+        by = [t for _, t in env.boundary]
+        p.area(bx, by, HEAT_INK, opacity=0.10)
+        p.line(bx, by, INK, "measured envelope (despiked)", width=2.2,
+               opacity=0.9)
+    if env.boundary_raw:
+        p.line([w / ratio * RPM for w, _ in env.boundary_raw],
+               [t for _, t in env.boundary_raw],
+               MUTED, "before despiking", width=1.2, dash="3 3", opacity=0.55)
+
+    # No p99.9 rule here, deliberately. It is a SIZING statistic -- the demand
+    # the peak-torque criterion is built on -- and the report states it next to
+    # the max it was chosen over. Drawn on this chart it added a horizontal line
+    # with no torque-speed meaning that cut straight across the density, hiding
+    # the very region the chart exists to show. The despiked outline already
+    # says what the joint reached, brief excursions included.
+
+    # 3. every stored excursion, individually, sized by how long it lasted
+    if env.outliers:
+        durs = [o.duration for o in env.outliers]
+        d_lo, d_hi = min(durs), max(durs)
+        inside_x, inside_y, out_x, out_y = [], [], [], []
+        for o in env.outliers:
+            x = abs(o.omega_at_peak) / ratio * RPM
+            y = abs(o.tau_peak)
+            avail = phys.max_torque_at_speed(
+                a, abs(o.omega_at_peak) * float(j.ratio), v_bus) * (
+                    j.n_actuators * float(j.ratio) * float(j.ratio_eff))
+            if y > avail:
+                out_x.append(x)
+                out_y.append(y)
+            else:
+                inside_x.append(x)
+                inside_y.append(y)
+        if inside_x:
+            p.scatter(inside_x, inside_y, SERIES[3],
+                      f"excursions above p99 ({len(env.outliers)} kept)",
+                      r=3.0, opacity=0.75)
+        if out_x:
+            p.scatter(out_x, out_y, ALERT,
+                      f"OUTSIDE the envelope ({len(out_x)})",
+                      r=4.2, opacity=0.95, marker="square")
+        worst = max(env.outliers, key=lambda o: abs(o.tau_peak))
+        dur_txt = (f"{worst.duration*1e3:.0f} ms" if worst.duration < 1.0
+                   else f"{worst.duration:.1f} s")
+        p.text_at(abs(worst.omega_at_peak) / ratio * RPM, abs(worst.tau_peak),
+                  f"{abs(worst.tau_peak):.1f} N.m for {dur_txt}",
+                  ALERT, dx=9, dy=-9, anchor="start", weight="600")
+
+    # 5. where in all that the thermally binding sequence lives
+    win = ev.extras.get("binding_window")
+    if win and win.segments:
+        p.scatter([abs(w) / ratio * RPM for _, _, w in win.segments],
+                  [abs(t) for _, t, _ in win.segments],
+                  SERIES[1], f"worst {win.duration:.0f} s sequence",
+                  r=2.4, opacity=0.55)
+
+    p.footnote = (f"density is time-in-cell over {env.capture.duration/3600.0:.2f} hr; "
+                  f"the outline and every excursion come from raw samples, not "
+                  f"from the cells")
+
 
 def torque_speed(ev: Evaluation, width=1020, height=630) -> str:
     a, j = ev.actuator, ev.joint
@@ -555,8 +890,11 @@ def torque_speed(ev: Evaluation, width=1020, height=630) -> str:
     if tc:
         p.hline(tc, SERIES[2], "continuous (thermal)", dash="7 4", width=1.9)
 
+    env = ev.extras.get("envelope")
     segs = getattr(ev, "joint_segments", None) or []
-    if segs:
+    if env is not None:
+        _overlay_envelope(p, ev, env, j, v_bus, a)
+    elif segs:
         # Operating points over ONE motion cycle -- not a duty percentage.
         # Both torque and speed are magnitudes, so accel and decel of the SAME
         # stroke would otherwise land in different bands under one label: with
@@ -829,7 +1167,18 @@ def overload_endurance(ev: Evaluation, condition: str = "rotating",
     # One point per variant also answers "what if I ran this harder?", which a
     # single point cannot, and lands the whole family on the axis the reader is
     # already reading the reference lines against.
-    variants = duty_variants(ev)
+    # Under an envelope the family is not synthetic at all: the stored windows
+    # ARE the session's own endurance curve, one real excerpt per timescale, on
+    # exactly the axes this chart already uses. Reading the two curves together
+    # answers the question directly -- at every timescale, is what the robot did
+    # inside what the actuator can hold? -- and the binding timescale is
+    # wherever they come closest, visible rather than buried in a table.
+    env = ev.extras.get("envelope")
+    if env is not None and env.windows:
+        _plot_window_ladder(p, ev, env, gain, lg, a, j)
+        variants = []
+    else:
+        variants = duty_variants(ev)
     vx, vy, vlab = [], [], []
     for label, segs, df, nominal in variants:
         period = sum(float(s[0]) for s in segs)

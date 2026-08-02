@@ -20,6 +20,138 @@ def _bar(margin: float, width: int = 12) -> str:
     return "[" + "=" * n + "." * (width - n) + "]"
 
 
+def _envelope_sections(add, ev: Evaluation, env, j) -> None:
+    """
+    What the joint actually did, and which artifact each number came from.
+
+    The authority table is not decoration. The whole feature rests on using each
+    artifact only for what it can answer -- an occupancy record has no time
+    ordering, so a peak winding temperature read off it would be an artefact of
+    the sort -- and a reader who does not know that will read the numbers wrong.
+    """
+    cap = env.capture
+    add("")
+    add("APPLICATION ENVELOPE  (measured, not commanded)")
+    add(f"  envelope              : {env.name}")
+    prov = env.provenance()
+    add(f"  provenance            : {prov.source}, +/-{prov.tol*100:.0f}%  "
+        f"(torque from {env.torque_source})")
+    where = " / ".join(x for x in (cap.robot_id, cap.joint_id) if x)
+    when = cap.captured_at.split("T")[0] if cap.captured_at else "date not stated"
+    add(f"  captured              : {when}"
+        + (f"  on {where}" if where else "")
+        + (f", fw {cap.firmware}" if cap.firmware else ""))
+    add(f"  session length        : {cap.duration/3600.0:8.2f} hr   "
+        f"(coverage {cap.coverage*100:.1f}%"
+        + (f", {len(cap.gaps)} gaps totalling "
+           f"{sum(d for _, d in cap.gaps):.1f} s" if cap.gaps else ", no gaps")
+        + ")")
+    add(f"  occupancy             : {len(env.cells)} cells, "
+        f"{len(env.outliers)} excursions kept verbatim, "
+        f"{len(env.windows)} worst sequences")
+    for lg in cap.source_logs[:2]:
+        sha = str(lg.get("sha256", ""))[:12]
+        add(f"  source log            : {lg.get('file', '?')}"
+            + (f"  sha256 {sha}..." if sha else "")
+            + (f"  ({lg.get('rows', 0):,} rows)" if lg.get("rows") else ""))
+    if env.despike.applied:
+        add(f"  despiked              : {env.despike.filter} over "
+            f"{env.despike.width_samples} samples"
+            + (f" ({env.despike.width_s*1e3:.0f} ms)" if env.despike.width_s else "")
+            + f"; {env.despike.samples_changed:,} materially changed, worst by "
+              f"{env.despike.worst_change:.1f} N.m")
+
+    sup = ev.extras.get("motion_superseded") or []
+    if sup:
+        add(f"  supersedes            : {', '.join(sup)}  (kept in the "
+            f"application file; set motion_source to use one instead)")
+
+    add("")
+    add("  WHAT EACH ARTIFACT IS AUTHORITATIVE FOR")
+    add("    occupancy   : cycle-mean loss, case temperature, RMS current")
+    add("    boundary    : the reached torque-speed outline (raw samples, unbinned)")
+    add("    excursions  : every event above the cut, verbatim, with its duration")
+    add("    sequences   : peak winding temperature and burst endurance")
+    add("    percentiles : the peak torque and speed demands")
+    add("    A peak winding temperature is NOT derived from the occupancy record:")
+    add("    it has no time ordering, so any ripple read off it would be an")
+    add("    artefact of how the cells happened to be sorted.")
+
+    regimes = env.time_in_regime()
+    if regimes:
+        add("")
+        add("  TIME IN REGIME")
+        for key in ("holding", "driving", "regenerating"):
+            if key in regimes:
+                frac, mean_tau = regimes[key]
+                label = (key + (" (|w| < 0.05 rad/s)" if key == "holding" else ""))
+                add(f"    {label:<26} {frac*100:5.1f}%   mean |tau| "
+                    f"{mean_tau:5.2f} N.m")
+
+    if env.duration_curve:
+        add("")
+        add("  SUSTAINED JOINT TORQUE BY AVERAGING WINDOW  (RMS, N.m)")
+        pts = env.duration_curve
+        for i in range(0, len(pts), 2):
+            row = "    "
+            for w, t in pts[i:i + 2]:
+                row += f"{w:8.4g} s {t:7.2f}      "
+            add(row.rstrip())
+        tau_c = float(ev.actuator.C_c) * float(ev.actuator.Rth_ca)
+        sus = env.sustained_torque_at(tau_c)
+        if sus is not None:
+            add(f"    this actuator's case constant is {tau_c/60.0:.0f} min, so the "
+                f"window that")
+            add(f"    sets its thermal verdict carries {sus:.2f} N.m at the joint")
+
+    add("")
+    add("  EXTREMES AND EXCURSIONS")
+    e = env.extremes
+    add(f"    peak torque    p99 {e.t('p99'):6.2f}   p99.9 {e.t('p99_9'):6.2f}   "
+        f"max {e.t('max'):6.2f} N.m   (sizing uses p99.9)")
+    add(f"    peak speed     p99 {e.w('p99')*RPM:6.0f}   p99.9 "
+        f"{e.w('p99_9')*RPM:6.0f}   max {e.w('max')*RPM:6.0f} rpm")
+    if e.t("max_raw") > e.t("max") * 1.001:
+        add(f"    before despiking the log peaked at {e.t('max_raw'):.2f} N.m; the "
+            f"difference was")
+        add(f"    isolated single-sample noise, not a sustained event")
+
+    if env.event_counts:
+        add("")
+        add(f"    excursions above    events   total time     mean    longest")
+        for key in ("p95", "p99", "p99_9"):
+            c = env.event_counts.get(key)
+            if not c:
+                continue
+            label = key.replace("_", ".")
+            add(f"      {label:<5} {c.get('threshold', 0):6.2f} N.m "
+                f"{c.get('events', 0):7d} {c.get('total_time', 0):10.1f} s "
+                f"{c.get('mean_duration', 0):8.2f} s {c.get('max_duration', 0):8.2f} s")
+
+    if env.outliers:
+        worst = sorted(env.outliers, key=lambda o: -abs(o.tau_peak))[:4]
+        add("")
+        add("    worst excursions (verbatim, never binned)")
+        n_out = ev.extras.get("points_outside_envelope", 0)
+        for o in worst:
+            flag = ""
+            dur = (f"{o.duration*1e3:5.0f} ms" if o.duration < 1.0
+                   else f"{o.duration:5.2f} s ")
+            add(f"      t={o.t_start:8.1f} s  {dur}  {o.tau_peak:7.2f} N.m at "
+                f"{o.omega_at_peak*RPM:5.0f} rpm{flag}")
+        if n_out:
+            add(f"    {n_out} probe point(s) fall outside the actuator's "
+                f"torque-speed envelope")
+
+    if env.n_actuators_at_capture and env.n_actuators_at_capture != j.n_actuators:
+        add("")
+        add(f"    NOTE: captured with {env.n_actuators_at_capture} actuator(s), "
+            f"evaluated against {j.n_actuators}.")
+        add(f"    Joint-referred torque does not depend on that count, so this is a")
+        add(f"    legitimate comparison -- it is precisely the question of whether")
+        add(f"    {j.n_actuators} unit(s) can deliver what the joint was seen to need.")
+
+
 def render(ev: Evaluation, verbose: bool = True) -> str:
     a, j = ev.actuator, ev.joint
     L: List[str] = []
@@ -75,17 +207,30 @@ def render(ev: Evaluation, verbose: bool = True) -> str:
         f"{j.T_ambient:.0f} degC ambient)")
     add(f"  no-load speed         : {w0*RPM:8.0f} rpm  ({w0:.1f} rad/s)")
 
+    # --- the measured envelope, when there is one -------------------------
+    env = ev.extras.get("envelope")
+    if env is not None:
+        _envelope_sections(add, ev, env, j)
+
     # --- duty cycle ---
     if ev.duty_segments:
         per = sum(s[0] for s in ev.duty_segments)
         tmax = max(abs(t) for _, t, _ in ev.duty_segments)
         wmax = max(abs(w) for _, _, w in ev.duty_segments)
         add("")
-        add("DUTY CYCLE (per actuator, at its output shaft)")
-        add(f"  cycle period          : {per:.2f} s")
-        add(f"  peak torque demand    : {tmax:8.2f} N.m")
-        add(f"  RMS current           : {ev.extras.get('i_rms_duty', 0):8.2f} A_rms")
-        add(f"  peak speed            : {wmax*RPM:8.0f} rpm")
+        if env is not None:
+            add("OCCUPANCY AS A DUTY CYCLE (per actuator, at its output shaft)")
+            add(f"  session length        : {per:.0f} s")
+            add(f"  RMS current           : {ev.extras.get('i_rms_duty', 0):8.2f} A_rms")
+            add(f"  cell torque range     : {tmax:8.2f} N.m  (a cell average, NOT "
+                f"the peak -- see EXTREMES)")
+            add(f"  cell speed range      : {wmax*RPM:8.0f} rpm")
+        else:
+            add("DUTY CYCLE (per actuator, at its output shaft)")
+            add(f"  cycle period          : {per:.2f} s")
+            add(f"  peak torque demand    : {tmax:8.2f} N.m")
+            add(f"  RMS current           : {ev.extras.get('i_rms_duty', 0):8.2f} A_rms")
+            add(f"  peak speed            : {wmax*RPM:8.0f} rpm")
 
     # --- commanded motion: solved, not prescribed -------------------------
     # move_time is an OUTPUT of the limit solver, so it is reported rather than
@@ -165,9 +310,17 @@ def render(ev: Evaluation, verbose: bool = True) -> str:
                 add(f"  burst capability      : {tl:6.0f} s from cold before the "
                     f"winding hits {float(a.T_winding_max):.0f} degC")
         else:
-            add(f"  peak winding temp     : {t.t_winding_peak:6.1f} degC "
-                f"(limit {float(a.T_winding_max):.0f})")
-            add(f"  settled winding temp  : {t.t_winding_final:6.1f} degC")
+            if env is None:
+                add(f"  peak winding temp     : {t.t_winding_peak:6.1f} degC "
+                    f"(limit {float(a.T_winding_max):.0f})")
+            else:
+                # Deliberately absent: t_winding_peak from an occupancy record
+                # is a function of the cell sort order, not of the robot. The
+                # honest peak comes from the binding sequence below.
+                add(f"  within-cycle ripple   :    n/a   -- the occupancy record "
+                    f"has no time ordering")
+            add(f"  settled winding temp  : {t.t_winding_final:6.1f} degC"
+                + (f" (limit {float(a.T_winding_max):.0f})" if env is not None else ""))
             add(f"  settled case temp     : {t.t_case_final:6.1f} degC")
             add(f"  mean heat dissipation : {t.mean_loss_W:6.2f} W")
             tw = float(a.C_w) * float(a.Rth_wc)
@@ -175,6 +328,36 @@ def render(ev: Evaluation, verbose: bool = True) -> str:
             add(f"  time constants        : winding {tw:.0f} s, case {tc_:.0f} s")
             add(f"  duty cycles simulated : {t.duty_cycles_simulated}"
                 + ("  (converged)" if t.settled else "  (NOT converged - still heating)"))
+
+            # The composition the whole feature exists to compute: the case node
+            # warms to the session mean, and then the worst real stretch of the
+            # log happens on top of that. Neither artifact can answer this
+            # alone -- the histogram has no ordering, the window has no history.
+            win = ev.extras.get("binding_window")
+            if win is not None:
+                sel = ", ".join(f"{x:g}" for x in win.selected_by_tau_w) or "-"
+                tw_act = ev.extras.get("actuator_tau_w", 0.0)
+                add("")
+                add(f"  binding sequence      : the worst {win.duration:.0f} s of the "
+                    f"session, at t={win.found_at:.0f} s")
+                add(f"                          RMS {win.rms_torque:.2f} N.m at the "
+                    f"joint; selected by the {sel} s kernel,")
+                add(f"                          and this actuator's winding "
+                    f"constant is {tw_act:.1f} s")
+                add(f"  case temp at onset    : {t.t_case_final:6.1f} degC  (the "
+                    f"session mean, from the occupancy record)")
+                ttl = ev.extras.get("window_time_to_limit_s", "absent")
+                if ttl is None:
+                    add(f"  running it from there : never reaches the winding limit")
+                elif ttl != "absent":
+                    verdict = ("survives" if ttl >= win.duration
+                               else "TRIPS before the sequence ends")
+                    add(f"  running it from there : hits the limit after {ttl:.0f} s, "
+                        f"so it {verdict}")
+                settled = ev.extras.get("window_settled_winding")
+                if settled is not None:
+                    add(f"  if it repeated forever: {settled:6.1f} degC  (a bound, "
+                        f"not a prediction -- a burst is not a duty cycle)")
             if "time_to_limit_s" in ev.extras:
                 tl = ev.extras["time_to_limit_s"]
                 if tl is None:

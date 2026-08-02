@@ -42,10 +42,26 @@ APPLICATION_DIR = os.environ.get(
 # The bundled examples are public so a fresh clone can run the quick start.
 EXAMPLE_DIR = os.path.join(APPLICATION_DIR, "examples")
 
+# Envelopes are summaries of real capture sessions. They get their own directory
+# rather than living inside the application file because a joint is re-captured
+# periodically without the mechanism changing: a recapture should produce a diff
+# that touches only the envelope, and carry its own provenance (which log, which
+# robot, which day) independently of the joint's physical definition.
+ENVELOPE_DIR = os.environ.get(
+    "ACTUATOR_EVAL_ENVELOPES_DIR", os.path.join(_REPO, "envelopes"))
+EXAMPLE_ENVELOPE_DIR = os.path.join(ENVELOPE_DIR, "examples")
+
+ENVELOPE_SCHEMA = "actuator_eval.envelope/1"
+
 
 def application_search_path() -> List[str]:
     """Directories searched for an application named without a path."""
     return [APPLICATION_DIR, EXAMPLE_DIR]
+
+
+def envelope_search_path() -> List[str]:
+    """Directories searched for an envelope named without a path."""
+    return [ENVELOPE_DIR, EXAMPLE_ENVELOPE_DIR]
 
 _ACT_PLAIN = ["name", "vendor", "url", "price_usd", "gear_type",
               "pole_pairs", "modulation_k", "notes",
@@ -447,7 +463,249 @@ def joint_from_dict(d: Dict) -> Tuple[Joint, U.UnitAudit]:
         audit.record("duty_segments", len(segs), "count",
                      f"{len(segs)} segments in ({', '.join(du)})", True)
 
+    # An envelope is a record of what this joint actually did. It outranks a
+    # profile (a guess at one simple move), which outranks duty_segments (a
+    # hand-written list). Declaring several is fine -- the superseded blocks are
+    # kept so that removing the envelope reference falls straight back.
+    if "envelope" in d and d["envelope"] is not None:
+        spec = d["envelope"]
+        ref = spec.get("file") if isinstance(spec, dict) else spec
+        if not ref:
+            raise ValueError(
+                "the 'envelope' block must name a file, either as a bare "
+                "string or as {\"file\": \"name\"}.")
+        env, _ = load_envelope_with_audit(ref)
+        if isinstance(spec, dict) and spec.get("note"):
+            env.note = env.note or spec["note"]
+
+        # The envelope is joint-referred, so it is only valid for the drivetrain
+        # it was captured on. A ratio mismatch means the capture came off a
+        # different machine than this application describes, and every torque in
+        # it is wrong by that factor.
+        j_ratio = float(j.ratio) if j.ratio is not None else 1.0
+        if abs(env.ratio - j_ratio) > 1e-6 * max(1.0, abs(j_ratio)):
+            raise ValueError(
+                f"envelope '{ref}' was captured at ratio {env.ratio:g} but this "
+                f"application declares ratio {j_ratio:g}. Joint-referred torque "
+                f"depends on that ratio, so the capture does not describe this "
+                f"drivetrain. Recapture, or correct whichever value is wrong.")
+        j.envelope = env
+        audit.record("envelope", env.total_time, "s",
+                     f"{env.name} ({len(env.cells)} cells, "
+                     f"{len(env.windows)} windows)", True)
+
+    if "motion_source" in d and d["motion_source"]:
+        pin = str(d["motion_source"])
+        if pin != "auto" and pin not in Joint.MOTION_SOURCES:
+            raise ValueError(
+                f"motion_source '{pin}' is not one of "
+                f"{', '.join(Joint.MOTION_SOURCES)} or 'auto'.")
+        j.motion_source = pin
+
     return j, audit
+
+
+# ---------------------------------------------------------------------------
+# Envelope
+# ---------------------------------------------------------------------------
+
+def _env_scalar(container: dict, key: str, audit, strict, default=None):
+    """A dimensioned scalar inside an envelope file."""
+    dim = U.ENVELOPE_DIMENSIONS.get(key)
+    if dim is None or key not in container:
+        return default
+    v = U.parse_value(container, key, dim, audit=audit, strict=strict)
+    return default if v is None else v
+
+
+def envelope_from_dict(d: Dict) -> Tuple["Envelope", U.UnitAudit]:
+    """
+    Parse an envelope file into an Envelope.
+
+    The whole file is version-gated rather than guarded field by field: this is
+    a new format with no deployed history, so one check on `schema` is cheaper
+    and clearer than a migration guard per key, and it gives a pointed error the
+    day the format does change.
+    """
+    from .envelope import (Cell, Capture, Despike, Envelope, Extremes, Outlier,
+                           Window)
+
+    audit = U.UnitAudit()
+    strict = bool(d.get("strict_units", False))
+
+    schema = d.get("schema")
+    if schema != ENVELOPE_SCHEMA:
+        raise ValueError(
+            f"envelope schema '{schema}' is not supported; this build reads "
+            f"'{ENVELOPE_SCHEMA}'. Regenerate the envelope from its source log "
+            f"with envelope_from_log.py rather than hand-editing the version.")
+
+    env = Envelope(name=d.get("name", "envelope"))
+    env.note = d.get("note", "")
+    env.source = d.get("source")
+    env.tol = d.get("tol")
+
+    cap = d.get("capture", {}) or {}
+    env.capture = Capture(
+        captured_at=cap.get("captured_at", ""),
+        robot_id=cap.get("robot_id", ""),
+        joint_id=cap.get("joint_id", ""),
+        firmware=cap.get("firmware", ""),
+        duration=_env_scalar(cap, "duration", audit, strict, 0.0) or 0.0,
+        sample_rate=_env_scalar(cap, "sample_rate", audit, strict),
+        coverage=float(cap.get("coverage", 1.0)),
+        gaps=[(float(g["t"]), float(g["duration"])) for g in cap.get("gaps", [])],
+        source_logs=list(cap.get("source_logs", [])),
+        tool_version=cap.get("tool_version", ""),
+    )
+
+    ref = d.get("referred_to", {}) or {}
+    env.ratio = _env_scalar(ref, "ratio", audit, strict, 1.0) or 1.0
+    env.n_actuators_at_capture = ref.get("n_actuators_at_capture")
+    env.torque_source = ref.get("torque_source", "commanded_current")
+    env.sign_convention = ref.get("sign_convention", "")
+    ctrl = ref.get("controller", {}) or {}
+    env.fixed_rate = bool(ctrl.get("fixed_rate", True))
+    env.dt_nominal = _env_scalar(ctrl, "dt", audit, strict)
+    dsp = ref.get("despike", {}) or {}
+    env.despike = Despike(
+        filter=dsp.get("filter", "median"),
+        width_samples=int(dsp.get("width_samples", 0)),
+        width_s=_env_scalar(dsp, "width", audit, strict),
+        samples_changed=int(dsp.get("samples_changed", 0)),
+        worst_change=_env_scalar(dsp, "worst_change", audit, strict, 0.0) or 0.0,
+    )
+
+    occ = d.get("occupancy", {}) or {}
+    env.total_time = _env_scalar(occ, "total_time", audit, strict, 0.0) or 0.0
+    env.binned_below = _env_scalar(occ, "binned_below", audit, strict)
+    env.torque_edges = [float(x) for x in
+                        (occ.get("torque_edges", {}) or {}).get("edges", [])]
+    env.speed_edges = [float(x) for x in
+                       (occ.get("speed_edges", {}) or {}).get("edges", [])]
+    cu = occ.get("cells_units", ["-", "-", "s", "N.m", "rad/s", "N.m"])
+    for row in occ.get("cells", []):
+        tau_rms = U.convert(float(row[3]), cu[3], "torque")
+        env.cells.append(Cell(
+            ti=int(row[0]), si=int(row[1]),
+            seconds=U.convert(float(row[2]), cu[2], "time"),
+            tau=tau_rms,
+            omega=U.convert(float(row[4]), cu[4], "angular_velocity"),
+            tau_mean=(U.convert(float(row[5]), cu[5] if len(cu) > 5 else cu[3],
+                                "torque") if len(row) > 5 else tau_rms),
+        ))
+    if env.cells and not env.total_time:
+        env.total_time = sum(c.seconds for c in env.cells)
+
+    for key, target in (("boundary", "boundary"), ("boundary_raw", "boundary_raw")):
+        b = d.get(key, {}) or {}
+        bu = b.get("units", ["rad/s", "N.m"])
+        setattr(env, target, [
+            (U.convert(float(p[0]), bu[0], "angular_velocity"),
+             U.convert(float(p[1]), bu[1], "torque")) for p in b.get("points", [])])
+
+    ol = d.get("outliers", {}) or {}
+    ou = ol.get("rows_units", ["s", "s", "N.m", "rad/s", "N.m", "N.m"])
+    for r in ol.get("rows", []):
+        mean = U.convert(float(r[4]), ou[4], "torque")
+        env.outliers.append(Outlier(
+            t_start=U.convert(float(r[0]), ou[0], "time"),
+            duration=U.convert(float(r[1]), ou[1], "time"),
+            tau_peak=U.convert(float(r[2]), ou[2], "torque"),
+            omega_at_peak=U.convert(float(r[3]), ou[3], "angular_velocity"),
+            tau_mean=mean,
+            tau_rms=(U.convert(float(r[5]), ou[5] if len(ou) > 5 else ou[4],
+                               "torque") if len(r) > 5 else mean),
+        ))
+
+    ex = d.get("extremes", {}) or {}
+    tq = ex.get("torque_abs", {}) or {}
+    sp = ex.get("speed_abs", {}) or {}
+    tqu, spu = tq.get("units", "N.m"), sp.get("units", "rad/s")
+    env.extremes = Extremes(
+        torque={k: U.convert(float(v), tqu, "torque")
+                for k, v in tq.items() if k != "units"},
+        speed={k: U.convert(float(v), spu, "angular_velocity")
+               for k, v in sp.items() if k != "units"},
+    )
+
+    dc = d.get("duration_curve", {}) or {}
+    dcu = dc.get("units", "N.m")
+    env.duration_curve = [(float(p[0]), U.convert(float(p[1]), dcu, "torque"))
+                          for p in dc.get("points", [])]
+
+    env.event_counts = dict(d.get("event_counts", {}) or {})
+
+    for w in d.get("windows", []):
+        su = w.get("segments_units", ["s", "N.m", "rad/s"])
+        sel = (w.get("selected_by_tau_w", {}) or {})
+        env.windows.append(Window(
+            duration=_env_scalar(w, "duration", audit, strict, 0.0) or 0.0,
+            found_at=_env_scalar(w, "found_at", audit, strict, 0.0) or 0.0,
+            rms_torque=_env_scalar(w, "rms_torque", audit, strict, 0.0) or 0.0,
+            segments=[(U.convert(float(s[0]), su[0], "time"),
+                       U.convert(float(s[1]), su[1], "torque"),
+                       U.convert(float(s[2]), su[2], "angular_velocity"))
+                      for s in w.get("segments", [])],
+            selected_by_tau_w=[float(x) for x in (sel.get("value", []) if
+                                                  isinstance(sel, dict) else sel)],
+            selection_metric=w.get("selection_metric", "tau_squared_single_pole"),
+        ))
+    env.windows.sort(key=lambda w: w.duration)
+
+    return env, audit
+
+
+def resolve_envelope_path(name_or_path: str) -> str:
+    """Locate an envelope file by name or explicit path; private shadows example."""
+    if os.path.exists(name_or_path):
+        return os.path.abspath(name_or_path)
+    fname = name_or_path if name_or_path.endswith(".json") else name_or_path + ".json"
+    for d in envelope_search_path():
+        cand = os.path.join(d, fname)
+        if os.path.exists(cand):
+            return os.path.abspath(cand)
+    known = ", ".join(n for n, _ in list_envelopes()) or "none found"
+    raise FileNotFoundError(
+        f"no envelope '{name_or_path}'. Give a path to a json file, or one "
+        f"of: {known}")
+
+
+def load_envelope_with_audit(name_or_path: str) -> Tuple["Envelope", U.UnitAudit]:
+    """Load one captured operating envelope, keeping its unit audit."""
+    path = resolve_envelope_path(name_or_path)
+    with open(path) as f:
+        d = json.load(f)
+    try:
+        env, audit = envelope_from_dict(d)
+    except U.UnitError as e:
+        raise U.UnitError(f"in envelope file '{path}': {e}") from None
+    env.source_path = path
+    return env, audit
+
+
+def load_envelope(name_or_path: str, with_audit: bool = False):
+    """Load one captured operating envelope."""
+    env, audit = load_envelope_with_audit(name_or_path)
+    return (env, audit) if with_audit else env
+
+
+def list_envelopes() -> List[Tuple[str, str]]:
+    """[(name, kind)] for every envelope found, kind 'private' or 'example'."""
+    out: List[Tuple[str, str]] = []
+    seen = set()
+    for d, kind in ((ENVELOPE_DIR, "private"), (EXAMPLE_ENVELOPE_DIR, "example")):
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".json") or f.startswith("_"):
+                continue
+            name = f[:-5]
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append((name, kind))
+    return out
 
 
 def resolve_application_path(name_or_path: str) -> str:

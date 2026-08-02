@@ -24,7 +24,8 @@ Putting an application fact in an actuator file makes it silently wrong for
 every other robot that uses that actuator, which is why they are separate.
 """
 
-from . import params, units, models, physics, db, evaluate, report, charts
+from . import (params, units, envelope, models, physics, db, evaluate, report,
+               charts)
 
-__all__ = ["params", "units", "models", "physics", "db", "evaluate",
+__all__ = ["params", "units", "envelope", "models", "physics", "db", "evaluate",
            "report", "charts"]

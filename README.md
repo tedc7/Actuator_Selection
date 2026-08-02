@@ -65,7 +65,10 @@ actuator_eval/            the engine, importable as a package
 applications/             one file per joint on your robot -- GITIGNORED
   examples/               ...except these, so a fresh clone can run the above
     _TEMPLATE.json
+envelopes/                measured operating envelopes -- GITIGNORED
+  examples/               ...except the bundled one
 eval_actuator.py          CLI
+envelope_from_log.py      turn a controller log into an envelope
 ```
 
 Two kinds of input file, and the distinction is the whole reason for the split:
@@ -163,6 +166,126 @@ descriptions agree. Three things to watch:
   Note that `J_rotor` is estimated from mass and diameter when a DB entry omits
   it, so declare a datasheet value if the reflected term is a large share of the
   total.
+
+---
+
+## Application envelopes: sizing against what the robot actually did
+
+A `profile` is one idealised move repeated forever. A real joint runs a mix of
+tasks, payloads and idle periods whose torque distribution looks nothing like a
+trapezoid, and sizing against the idealisation is over-confident exactly where it
+matters most: thermal. An **envelope** is a compact summary of a real session,
+committed alongside the application and evaluated the same way.
+
+### The logger contract
+
+Three columns, at whatever fixed rate your controller already runs, appended to a
+file: **time, position, torque**. That is the whole ask — no real-time
+computation, no envelope built on the robot. Log speed too if the controller
+already estimates it (its filtered value beats post-hoc differentiation), or a
+current column instead of torque given a declared `--kt-joint`.
+
+```
+./envelope_from_log.py --log elbow_2026-07-28.csv \
+    --map time=t_s,position=q_rad,torque=tau_cmd_Nm \
+    --units time=s,position=rad,torque=N.m \
+    --ratio 1.0 --torque-source commanded_current \
+    --gravity-angle -90 --name elbow_july --out envelopes/elbow_july.json
+```
+
+A 400 MB log costs the same memory as a 4 MB one: the script streams, and never
+holds the log. What comes out is tens of KB of reviewable JSON, so a recapture
+produces a diff you can read.
+
+Point an application at it, and the envelope supersedes the profile:
+
+```json
+"envelope": "elbow_july",
+"motion_source": "auto"
+```
+
+Precedence is **`envelope` > `profile` > `duty_segments`** — a record of what
+happened outranks a guess at one move, which outranks a hand-written segment
+list. Declaring several is fine: the superseded ones are kept, so deleting the
+envelope reference falls straight back. `motion_source` (or `--motion-source`)
+pins one explicitly, which is how you A/B the commanded profile against the
+measured envelope without editing anything.
+
+### What is stored, and what each part may be used for
+
+The honesty of the whole feature rests on using each artifact only for what it
+can answer, so the report prints this table and the code enforces it.
+
+| artifact | authoritative for | derived from |
+|---|---|---|
+| occupancy | cycle-mean loss, case temperature, RMS current | binned cells |
+| boundary | the reached torque-speed outline | raw samples, max per speed slice |
+| excursions | every event above p99, with its duration | raw samples, verbatim |
+| sequences | peak winding temperature, burst endurance | raw samples, ordered |
+| percentiles | the peak torque and speed demands | raw samples |
+
+Cycle-mean loss and RMS current are pure functions of the *multiset* of
+`(dt, torque, speed)` triples — no ordering anywhere — so binning costs only the
+width of a cell (measured: RMS current within 6e-5, mean loss within 3e-4, total
+time exact). A **peak winding temperature is never read off the occupancy
+record**: it has no time ordering, so any ripple would be an artefact of how the
+cells happened to be sorted. That number comes from the stored sequences.
+
+The outline is the highest torque seen in each narrow speed slice, so it is free
+to rise and fall as the data does. It is deliberately neither monotone nor
+convex: both are global-max constructions that trace an envelope over the
+measured region rather than the region itself, and being conservative in a way
+the reader cannot see is the failure this artifact exists to avoid.
+
+Nothing that can size or fail an actuator depends on binning. Peaks, the outline
+and every excursion above p99 are raw-sample facts, and excursions are kept
+verbatim with their durations — a 4 ms spike at 3x torque and a 1.9 s excursion
+at 1.5x have very different consequences, and only the duration tells them apart.
+
+### The thermal split, which is the point
+
+Under an envelope the thermal question becomes two criteria, because they come
+from different artifacts and neither can answer the other:
+
+- **session mean** — what the whole capture settles at, from the occupancy record.
+- **worst sequence** — the thermally worst real stretch of the log, run *starting
+  from the case temperature the session mean produces*.
+
+That composition is what a commanded profile genuinely cannot tell you: the case
+node warms to the session average, and then the worst few seconds happen on top
+of it. The bundled example shows the two disagreeing — its worst 10 s sequence is
+survivable while its session mean is not, because 70% of that hour was spent
+holding against gravity.
+
+### Sizing, and why the peak is used twice
+
+`Peak torque` sizes on **p99.9**: one sensor glitch or a single collision should
+not size a joint. `Drive current limit` sizes on the **true max**, because an
+overcurrent fault is a threshold the silicon either crosses or does not, so the
+briefest spike trips it exactly as surely as a sustained one. Both numbers are
+always printed, and a `max` more than 2x the p99.9 is flagged as an
+outlier-dominated tail worth investigating.
+
+### Guards worth knowing about
+
+- **Median despiking, not a moving average.** PI output contains isolated
+  one-sample excursions that are not physically meaningful, but short *real*
+  events exist too. A median removes anything narrower than half its window and
+  passes anything wider through undistorted; a moving average attenuates by
+  duration and destroys both. Measured on a 1 kHz log: a 5 ms median rejects
+  isolated 40 N.m glitches and preserves a genuine 24 N.m / 8 ms event exactly,
+  where a 50 ms mean flattens that event to 9 N.m. What the despiker removed is
+  reported, and the unfiltered peak is kept as `max_raw`.
+- **Gravity sign check.** A flipped torque sign yields a plausible-looking
+  envelope that is confidently wrong in every downstream number. Gravity gives a
+  free independent check: at rest the holding torque must oppose it. Pass
+  `--gravity-angle` and the script refuses a capture whose sign is inverted.
+- **Coverage.** Dropouts are detected as gaps rather than read as long samples,
+  and a capture missing more than 5% of its session is refused: a histogram with
+  a large fraction of the time missing has a meaningless mean.
+- **Ratio cross-check.** An envelope is joint-referred, so it only describes the
+  drivetrain it was captured on. A mismatch against the application's `ratio` is
+  a hard error.
 
 ---
 
