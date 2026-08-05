@@ -11,7 +11,7 @@ repo so a fresh clone can run the quick start.
 ```
 applications/
   examples/          <- public, tracked, safe to share
-    elbow_example.json
+    elbow_profile_example.json
     _TEMPLATE.json
   my_robot_elbow.json    <- yours, ignored by git
   my_robot_elbow_report_robstride_00.txt

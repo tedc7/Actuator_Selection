@@ -1,5 +1,5 @@
 ==============================================================================
-  ELBOW (EXAMPLE)  <-  2 x RobStride 00  (RobStride Dynamics)
+  ELBOW (PROFILE EXAMPLE)  <-  2 x RobStride 00  (RobStride Dynamics)
 ==============================================================================
 
 CONFIGURATION

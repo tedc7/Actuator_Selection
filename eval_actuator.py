@@ -3,10 +3,10 @@
 Command line front end.
 
     ./eval_actuator.py --list
-    ./eval_actuator.py -a robstride_00 -j elbow_example
-    ./eval_actuator.py -a robstride_00 -j elbow_example -n 1,2,3
-    ./eval_actuator.py -a robstride_00 -j elbow_example --set R_phase=0.42 --set Rth_ca=2.1
-    ./eval_actuator.py -a robstride_00 -j elbow_example --ambient 55 --bus 36
+    ./eval_actuator.py -a robstride_00 -j elbow_profile_example
+    ./eval_actuator.py -a robstride_00 -j elbow_profile_example -n 1,2,3
+    ./eval_actuator.py -a robstride_00 -j elbow_profile_example --set R_phase=0.42 --set Rth_ca=2.1
+    ./eval_actuator.py -a robstride_00 -j elbow_profile_example --ambient 55 --bus 36
 
 Results are written next to the application file that produced them, so a
 report never gets separated from its inputs. Use --save to write the text

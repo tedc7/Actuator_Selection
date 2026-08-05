@@ -4,7 +4,7 @@
   "n_actuators": 2,
 
   "_WHAT_THIS_IS": [
-    "The same joint as elbow_example, sized against a MEASURED session instead",
+    "The same joint as elbow_profile_example, sized against a MEASURED session instead",
     "of a commanded profile.",
     "",
     "A profile is a designer's guess at one simple move, repeated forever. A",
@@ -25,21 +25,9 @@
             "note": "actuators mounted coaxially on the joint, no extra reduction"},
   "ratio_type": "direct",
 
-  "load": {
-    "total_mass_at_CG":            {"value": 1.5,  "units": "kg",
-                         "note": "whole moving assembly: link, bracket, hardware and anything carried"},
-    "distance_joint_axis_to_CG":   {"value": 280,  "units": "mm",
-                         "note": "joint axis to the CG. Counts linearly for gravity and SQUARED for inertia"},
-    "moment_of_inertia_around_CG": {"value": 350,  "units": "kg.cm^2",
-                         "note": "about the CG, NOT about the joint axis -- the parallel-axis transfer m*d^2 is added for you"},
-    "joint_plane_tilt": {"value": 0,    "units": "deg"},
-    "gravity_angle":    {"value": -90,  "units": "deg",
-                         "note": "joint angle at which the CG points straight DOWN. Same frame as the envelope's sign_convention"},
-    "external_torque":  {"value": 0,    "units": "N.m"},
-    "joint_friction":   {"value": 0.15, "units": "N.m"}
-  },
-
-  "_MOTION_PRECEDENCE": [
+  "_MOTION_AND_LOAD": [
+    "READ THIS BEFORE THE load BLOCK BELOW. It decides whether any of it is used.",
+    "",
     "Three ways to declare how this joint moves, highest wins:",
     "",
     "  envelope  > profile > duty_segments",
@@ -55,9 +43,52 @@
     "is an error, not a silent fallback, because the whole point of pinning is",
     "to be certain which input you are looking at. --motion-source on the",
     "command line overrides this for a single run, which is how you A/B the",
-    "commanded profile against the measured envelope without editing anything."
+    "commanded profile against the measured envelope without editing anything.",
+    "",
+    "WHICH DECIDES WHETHER load IS USED AT ALL. The two loading models are",
+    "mutually exclusive:",
+    "",
+    "  load + profile   the torque history is PREDICTED from the mass",
+    "                   properties, gravity, friction and the commanded move.",
+    "                   Every field in load is used.",
+    "",
+    "  envelope         the torque history was OBSERVED. Gravity, friction and",
+    "                   external torque were all acting on the real joint while",
+    "                   it ran, so they are already inside the logged numbers.",
+    "                   NOTHING in load is read -- not even the mass properties.",
+    "                   Re-applying them would double-count.",
+    "",
+    "THIS FILE IS ENVELOPE-DRIVEN, so the whole load block below is currently",
+    "inert: edit any of it and the report does not change. The one visible",
+    "consequence is the Inertia ratio check, which reports as not available",
+    "rather than quoting a figure the measurement cannot corroborate.",
+    "",
+    "It is kept, and kept honest, because deleting the envelope key or running",
+    "--motion-source profile falls straight back to the predicted path and every",
+    "field goes live again with no other edit. Try it:",
+    "",
+    "    ./eval_actuator.py -a robstride_00 -j elbow_envelope_example \\",
+    "                       --motion-source profile"
   ],
   "motion_source": "auto",
+
+  "load": {
+    "_note": "INERT while the envelope above is active -- see _MOTION_AND_LOAD. Used in full on the profile path.",
+    "total_mass_at_CG":            {"value": 1.5,  "units": "kg",
+                         "note": "whole moving assembly: link, bracket, hardware and anything carried"},
+    "distance_joint_axis_to_CG":   {"value": 280,  "units": "mm",
+                         "note": "joint axis to the CG. Counts linearly for gravity and SQUARED for inertia"},
+    "moment_of_inertia_around_CG": {"value": 350,  "units": "kg.cm^2",
+                         "note": "about the CG, NOT about the joint axis -- the parallel-axis transfer m*d^2 is added for you"},
+    "joint_plane_tilt": {"value": 0,    "units": "deg",
+                         "note": "profile path only: scales how much of gravity this joint's plane sees"},
+    "gravity_angle":    {"value": -90,  "units": "deg",
+                         "note": "joint angle at which the CG points straight DOWN, in the same frame as profile.stroke_start. Profile path only -- an envelope needs no gravity angle, because the gravity torque is already in the log. NOT related to the envelope's sign_convention, which is a separate question about which way the logger's positive torque points"},
+    "external_torque":  {"value": 0,    "units": "N.m",
+                         "note": "profile path only"},
+    "joint_friction":   {"value": 0.15, "units": "N.m",
+                         "note": "profile path only"}
+  },
 
   "envelope": {"file": "elbow_pick_place_example",
                "note": "one hour of pick-and-place on cell 3, three payload variants"},

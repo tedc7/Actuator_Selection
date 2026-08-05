@@ -14,12 +14,12 @@ Built around three ideas:
 
 ```bash
 python3 eval_actuator.py --list
-python3 eval_actuator.py -a robstride_00 -j elbow_example
-python3 eval_actuator.py -a robstride_00 -j elbow_example -n 1,2,3     # compare 1/2/3 in parallel
-python3 eval_actuator.py -a robstride_00 -j elbow_example --ambient 55 --bus 36
-python3 eval_actuator.py -a robstride_00 -j elbow_example --surface-limit 45
-python3 eval_actuator.py -a robstride_00 -j elbow_example --set R_phase=0.42
-python3 eval_actuator.py -a robstride_06 -j elbow_example --save --charts
+python3 eval_actuator.py -a robstride_00 -j elbow_profile_example
+python3 eval_actuator.py -a robstride_00 -j elbow_profile_example -n 1,2,3     # compare 1/2/3 in parallel
+python3 eval_actuator.py -a robstride_00 -j elbow_profile_example --ambient 55 --bus 36
+python3 eval_actuator.py -a robstride_00 -j elbow_profile_example --surface-limit 45
+python3 eval_actuator.py -a robstride_00 -j elbow_profile_example --set R_phase=0.42
+python3 eval_actuator.py -a robstride_06 -j elbow_profile_example --save --charts
 ```
 
 `--save` writes the text report and `--charts` writes a self-contained HTML file
@@ -34,9 +34,9 @@ application sort together and the pair that produced them is readable off the
 filename:
 
 ```
-elbow_example_robstride_00.html          <- charts + embedded report
-elbow_example_robstride_00_report.txt    <- text report alone
-elbow_example_robstride_00_2x.html       <- one per count, from -n 1,2,3
+elbow_profile_example_robstride_00.html          <- charts + embedded report
+elbow_profile_example_robstride_00_report.txt    <- text report alone
+elbow_profile_example_robstride_00_2x.html       <- one per count, from -n 1,2,3
 ```
 
 No dependencies beyond the Python 3.9+ standard library. Tests: `python3 tests/test_smoke.py`.
@@ -47,7 +47,7 @@ As a library:
 from actuator_eval import db, evaluate, report
 
 act   = db.load_actuator("robstride_00")
-joint = db.load_application("elbow_example")
+joint = db.load_application("elbow_profile_example")
 ev    = evaluate.evaluate(act, joint)
 print(report.render(ev))
 print(ev.verdict, ev.binding.name)
@@ -315,6 +315,17 @@ outlier-dominated tail worth investigating.
   `"envelope": {"file": "...", "torque_sign": "positive_lowers"}`. That flips
   torque alone, which is worth ~5% of thermal margin on a geared joint and
   nothing at all on a direct drive.
+- **An active envelope makes the whole `load` block inert.** The two loading
+  models are mutually exclusive: `load` + `profile` means the torque history is
+  *predicted* from mass, gravity, friction and a commanded move; an `envelope`
+  means it was *observed*, with gravity, friction and external torque already
+  inside the logged numbers. So when an envelope is active, nothing in `load` is
+  read — not even the mass properties, since re-applying them would
+  double-count. Editing `load` changes nothing in the report, and the `Inertia
+  ratio` check reports as not available rather than quoting a figure the
+  measurement cannot corroborate. Keep the block anyway and keep it honest:
+  deleting the `envelope` key or running `--motion-source profile` falls
+  straight back to the predicted path with every field live again.
 - **Coverage.** Dropouts are detected as gaps rather than read as long samples,
   and a capture missing more than 5% of its session is refused: a histogram with
   a large fraction of the time missing has a meaningless mean.
@@ -346,7 +357,7 @@ Form 3 keeps quick edits quick, but every bare number is listed in the report's
 A unit from the *wrong dimension* is always a hard error, never a warning:
 
 ```
-UnitError: in application file 'elbow_example.json': unit 'kg' is a mass unit, but
+UnitError: in application file 'elbow_profile_example.json': unit 'kg' is a mass unit, but
 this field expects length. Valid units here: m, mm, cm, in, ft
 ```
 

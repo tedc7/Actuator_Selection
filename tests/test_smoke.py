@@ -40,7 +40,7 @@ def test_database_is_discoverable():
     assert "_TEMPLATE" not in acts, "templates must not appear as selectable"
 
     names = [n for n, _ in db.list_applications()]
-    assert "elbow_example" in names, names
+    assert "elbow_profile_example" in names, names
     assert "_TEMPLATE" not in names
 
 
@@ -62,7 +62,7 @@ def test_templates_parse():
 def test_end_to_end_example():
     """The quick-start command produces a complete, self-consistent report."""
     act, aa = db.load_actuator("robstride_00", with_audit=True)
-    joint, ja = db.load_application("elbow_example", with_audit=True)
+    joint, ja = db.load_application("elbow_profile_example", with_audit=True)
     ev = evaluate.evaluate(act, joint)
     ev.unit_audits = [aa, ja]
 
@@ -92,11 +92,11 @@ def test_units_wrong_dimension_is_hard_error():
 
 def test_source_path_and_output_dir():
     """Reports must be routed to the directory holding the application file."""
-    joint = db.load_application("elbow_example")
-    assert joint.source_path and joint.source_path.endswith("elbow_example.json")
+    joint = db.load_application("elbow_profile_example")
+    assert joint.source_path and joint.source_path.endswith("elbow_profile_example.json")
     assert joint.output_dir() == os.path.realpath(db.EXAMPLE_DIR) or \
            joint.output_dir() == db.EXAMPLE_DIR, joint.output_dir()
-    assert joint.slug() == "elbow_example"
+    assert joint.slug() == "elbow_profile_example"
 
     # a Joint built in code, not loaded, must still give a usable destination
     bare = Joint(name="Hand Built")
@@ -106,7 +106,7 @@ def test_source_path_and_output_dir():
 
 def test_charts_write_self_contained_html():
     act = db.load_actuator("robstride_00")
-    joint = db.load_application("elbow_example")
+    joint = db.load_application("elbow_profile_example")
     ev = evaluate.evaluate(act, joint)
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, "c.html")
@@ -123,8 +123,8 @@ def test_charts_write_self_contained_html():
 def test_cli_runs():
     """The documented command line actually executes."""
     for args in (["--list"],
-                 ["-a", "robstride_00", "-j", "elbow_example", "--brief"],
-                 ["-a", "robstride_00", "-j", "elbow_example", "-n", "1,2"]):
+                 ["-a", "robstride_00", "-j", "elbow_profile_example", "--brief"],
+                 ["-a", "robstride_00", "-j", "elbow_profile_example", "-n", "1,2"]):
         r = subprocess.run([sys.executable, "eval_actuator.py"] + args,
                            cwd=REPO, capture_output=True, text=True)
         assert r.returncode == 0, f"{args} failed:\n{r.stderr}"
@@ -135,7 +135,7 @@ def test_cli_writes_beside_application(tmp_path=None):
     """--save puts the report next to the application, not in the cwd."""
     with tempfile.TemporaryDirectory() as d:
         app = os.path.join(d, "probe.json")
-        with open(os.path.join(db.EXAMPLE_DIR, "elbow_example.json")) as f:
+        with open(os.path.join(db.EXAMPLE_DIR, "elbow_profile_example.json")) as f:
             src = f.read()
         with open(app, "w") as f:
             f.write(src)
@@ -172,7 +172,7 @@ def test_report_names_the_datasheet():
     from actuator_eval import db, evaluate, report
 
     act = db.load_actuator("robstride_00")
-    joint = db.load_application("elbow_example")
+    joint = db.load_application("elbow_profile_example")
     text = report.render(evaluate.evaluate(act, joint), verbose=False)
     assert "RS00 User Manual" in text, "report does not name the datasheet"
 
@@ -291,7 +291,7 @@ def test_chart_vendor_points_land_on_the_measured_curve():
     from actuator_eval import db, evaluate, charts
 
     act = db.load_actuator("robstride_00")
-    joint = db.load_application("elbow_example")
+    joint = db.load_application("elbow_profile_example")
     ev = evaluate.evaluate(act, joint)
     svg = charts.torque_speed(ev)
 
@@ -331,7 +331,7 @@ def test_chart_vendor_points_land_on_the_measured_curve():
 def test_report_and_chart_show_both_envelopes():
     from actuator_eval import db, evaluate, report, charts
 
-    joint = db.load_application("elbow_example")
+    joint = db.load_application("elbow_profile_example")
     act = db.load_actuator("robstride_06")
     ev = evaluate.evaluate(act, joint)
 
@@ -455,7 +455,7 @@ def test_endurance_chart_draws_with_and_without_vendor_data():
     """
     from actuator_eval import db, evaluate, charts
 
-    joint = db.load_joint("elbow_example")
+    joint = db.load_joint("elbow_profile_example")
 
     act = db.load_actuator("robstride_00")
     ev = evaluate.evaluate(act, joint)
@@ -498,7 +498,7 @@ def test_endurance_chart_draws_with_and_without_vendor_data():
     # so the endurance TIME at a given joint torque is unchanged by n. If a
     # refactor ever multiplies the torque going in, times collapse and this
     # catches it.
-    _solo = db.load_joint("elbow_example")
+    _solo = db.load_joint("elbow_profile_example")
     _solo.n_actuators = 1
     _svg_solo = charts.overload_endurance(
         evaluate.evaluate(db.load_actuator("robstride_00"), _solo), "rotating")
@@ -607,7 +607,7 @@ def test_thermal_chart_reflects_the_load_split_between_actuators():
     act = db.load_actuator("robstride_00")
     rises, peaks = [], []
     for n in (1, 2, 4):
-        joint = db.load_joint("elbow_example")
+        joint = db.load_joint("elbow_profile_example")
         joint.n_actuators = n
         ev = evaluate.evaluate(act, joint)
         peaks.append(max(abs(s[1]) for s in ev.duty_segments))
@@ -636,7 +636,7 @@ def test_thermal_chart_reflects_the_load_split_between_actuators():
 
     # And the chart itself must move with n, not just the physics behind it.
     def _svg_for(n):
-        jt = db.load_joint("elbow_example")
+        jt = db.load_joint("elbow_profile_example")
         jt.n_actuators = n
         return charts.thermal(evaluate.evaluate(act, jt))
 
@@ -929,7 +929,7 @@ def test_motion_source_precedence_and_pinning():
     """
     from actuator_eval.envelope import from_samples
 
-    jt = db.load_application("elbow_example")
+    jt = db.load_application("elbow_profile_example")
     assert jt.active_motion_source() == "profile"
 
     jt.duty_segments = [(0.5, 2.0, 1.0), (0.5, 1.0, 0.0)]
@@ -955,6 +955,51 @@ def test_motion_source_precedence_and_pinning():
             assert False, f"{why} must raise"
         except ValueError:
             pass
+
+
+def test_envelope_consults_no_load_values():
+    """
+    An envelope supersedes the whole `load` block, not just the motion.
+
+    Gravity, friction and external torque were acting on the real joint while it
+    ran, so they are already inside the logged torque; the mass properties are
+    the last thing that could still be read, and reading them would make "the
+    load block is unused with an envelope" false in exactly one place. So the
+    inertia check reports UNKNOWN rather than quoting a figure the measurement
+    cannot corroborate -- and stays advisory, so no verdict moves.
+    """
+    act = db.load_actuator("robstride_00")
+
+    jt = db.load_application("elbow_envelope_example")
+    assert jt.active_motion_source() == "envelope"
+    ev = evaluate.evaluate(act, jt, run_sensitivity=False)
+    im = [c for c in ev.criteria if c.name == "Inertia ratio"]
+    assert len(im) == 1, "the criterion is still reported, not dropped"
+    im = im[0]
+    assert im.status == evaluate.UNKNOWN, im.status
+    assert im.advisory and not im.margin_meaningful, \
+        "must stay advisory: UNKNOWN outranks MARGINAL in _ORDER, so a " \
+        "non-advisory UNKNOWN would drag the verdict down"
+    assert "not available" in im.detail
+
+    # Perturbing every load field must change nothing at all, which is the
+    # property the application files now promise in prose.
+    before = report.render(ev)
+    jt.load = Load(total_mass_at_CG=40.0, distance_joint_axis_to_CG=1.5,
+                   moment_of_inertia_around_CG=9.0, joint_plane_tilt=1.3,
+                   gravity_angle=0.65, external_torque=25.0,
+                   joint_friction=9.0)
+    after = report.render(evaluate.evaluate(act, jt, run_sensitivity=False))
+    assert before == after, "an active envelope must ignore every load value"
+
+    # Falling back to the profile brings the whole block live again.
+    jt = db.load_application("elbow_envelope_example")
+    jt.motion_source = "profile"
+    ev_p = evaluate.evaluate(act, jt, run_sensitivity=False)
+    im_p = [c for c in ev_p.criteria if c.name == "Inertia ratio"][0]
+    assert im_p.status != evaluate.UNKNOWN, "the profile path still computes it"
+    assert im_p.demand > 0 and im_p.capability > 0
+    assert "reflected/load" in im_p.detail
 
 
 def _example_envelope_dict():
@@ -1043,7 +1088,7 @@ def test_application_without_an_envelope_is_unchanged():
     profile path by even one number.
     """
     act = db.load_actuator("robstride_00")
-    jt = db.load_application("elbow_example")
+    jt = db.load_application("elbow_profile_example")
     assert jt.envelope is None and jt.active_motion_source() == "profile"
 
     ev = evaluate.evaluate(act, jt)
@@ -1548,7 +1593,7 @@ def test_envelope_duty_variants_sweep_throughput_not_rest():
 
     # The authored path keeps its own wording.
     prof = charts.duty_variants(evaluate.evaluate(
-        act, db.load_application("elbow_example")))
+        act, db.load_application("elbow_profile_example")))
     assert "as specified" in " ".join(v[0] for v in prof)
 
 

@@ -509,29 +509,24 @@ def evaluate(act: Actuator, joint: Joint, run_sensitivity: bool = True) -> Evalu
         depends_on=["I_peak_rms", "Kt_rotor"] + env_dep))
 
     # ---- 7. inertia match -------------------------------------------------
-    total_ratio = float(act.gear_ratio) * float(joint.ratio)
-    j_refl = n * float(act.J_rotor) * total_ratio ** 2
-    j_load = joint.load.inertia_total()
-    ratio_im = j_refl / max(j_load, 1e-12)
-    # Classic "inertia matching" (ratio ~ 1) maximises acceleration per amp, but
-    # that is a machine-tool criterion. For a robot joint, reflected rotor
-    # inertia that is SMALL next to the load is exactly what a quasi-direct-drive
-    # is for: it keeps the joint backdrivable and force-transparent. Only a
-    # rotor that dominates the load is a genuine problem, because then most of
-    # the torque goes into accelerating the motor itself and impacts are
-    # transmitted straight back through the gearbox.
-    if ratio_im <= 2.0:
-        im_status, verdict_txt = PASS, "rotor inertia is small next to the load (good for a QDD joint)"
-    elif ratio_im <= 5.0:
-        im_status, verdict_txt = MARGINAL, "rotor inertia is becoming significant next to the load"
+    if env is not None:
+        # An envelope is a record of what the joint ACTUALLY did, so nothing in
+        # the application's `load` block is consulted on this path -- gravity,
+        # friction and external torque were all present in the logged torque as
+        # experienced. The mass properties are the last thing that could still
+        # be read here, and reading them would make the rule "the load block is
+        # unused with an envelope" false in exactly one place, from declared
+        # numbers the envelope does not corroborate. Report it as unavailable
+        # instead. Advisory, so this never reaches a verdict.
+        ev.criteria.append(Criterion(
+            "Inertia ratio", UNKNOWN, 0.0, 0.0, "kg.m^2", float("inf"),
+            worst_source(act.J_rotor),
+            "not available: sized against a measured envelope, so no declared "
+            "load values are used (set motion_source to 'profile' to size "
+            "against the load block instead)",
+            ["J_rotor", "gear_ratio"], margin_meaningful=False, advisory=True))
     else:
-        im_status, verdict_txt = FAIL, "rotor inertia DOMINATES the load: most torque accelerates the motor"
-    ev.criteria.append(Criterion(
-        "Inertia ratio", im_status, j_load, j_refl, "kg.m^2", ratio_im,
-        worst_source(act.J_rotor),
-        f"reflected/load = {ratio_im:.3f} (reflected {j_refl*1e3:.2f} g.m^2, "
-        f"load {j_load*1e3:.2f} g.m^2); {verdict_txt}",
-        ["J_rotor", "gear_ratio"], margin_meaningful=False, advisory=True))
+        _inertia_match(ev, act, joint, n)
 
     # ---- 8. mass budget ---------------------------------------------------
     if joint.mass_budget is not None:
@@ -603,6 +598,7 @@ def evaluate(act: Actuator, joint: Joint, run_sensitivity: bool = True) -> Evalu
     # ---- 10. backdrivability ---------------------------------------------
     if joint.require_backdrivable:
         # torque at the joint needed to overcome reflected friction + cogging
+        total_ratio = float(act.gear_ratio) * float(joint.ratio)
         tau_bd = (float(act.friction_torque_rotor) * total_ratio
                   / max(float(act.gear_eff) * float(joint.ratio_eff), 1e-6)) * n
         thresh = 0.10 * max(tau_peak_joint, 1e-9)
@@ -619,6 +615,39 @@ def evaluate(act: Actuator, joint: Joint, run_sensitivity: bool = True) -> Evalu
     if run_sensitivity:
         ev.sensitivity = _sensitivity(act, joint, ev)
     return ev
+
+
+def _inertia_match(ev: Evaluation, act: Actuator, joint: Joint, n: int) -> None:
+    """
+    Reflected rotor inertia against the load, from the declared mass properties.
+
+    Only reachable on the predicted paths. An envelope supersedes the whole
+    `load` block, so evaluate() reports this as unavailable there rather than
+    computing it from numbers the measurement does not corroborate.
+    """
+    total_ratio = float(act.gear_ratio) * float(joint.ratio)
+    j_refl = n * float(act.J_rotor) * total_ratio ** 2
+    j_load = joint.load.inertia_total()
+    ratio_im = j_refl / max(j_load, 1e-12)
+    # Classic "inertia matching" (ratio ~ 1) maximises acceleration per amp, but
+    # that is a machine-tool criterion. For a robot joint, reflected rotor
+    # inertia that is SMALL next to the load is exactly what a quasi-direct-drive
+    # is for: it keeps the joint backdrivable and force-transparent. Only a
+    # rotor that dominates the load is a genuine problem, because then most of
+    # the torque goes into accelerating the motor itself and impacts are
+    # transmitted straight back through the gearbox.
+    if ratio_im <= 2.0:
+        im_status, verdict_txt = PASS, "rotor inertia is small next to the load (good for a QDD joint)"
+    elif ratio_im <= 5.0:
+        im_status, verdict_txt = MARGINAL, "rotor inertia is becoming significant next to the load"
+    else:
+        im_status, verdict_txt = FAIL, "rotor inertia DOMINATES the load: most torque accelerates the motor"
+    ev.criteria.append(Criterion(
+        "Inertia ratio", im_status, j_load, j_refl, "kg.m^2", ratio_im,
+        worst_source(act.J_rotor),
+        f"reflected/load = {ratio_im:.3f} (reflected {j_refl*1e3:.2f} g.m^2, "
+        f"load {j_load*1e3:.2f} g.m^2); {verdict_txt}",
+        ["J_rotor", "gear_ratio"], margin_meaningful=False, advisory=True))
 
 
 def _max_speed_at_torque(act: Actuator, tau_out: float, v_bus: float) -> float:
