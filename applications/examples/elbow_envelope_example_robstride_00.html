@@ -329,8 +329,8 @@ CRITERIA
         duty RMS current 1.64 A_rms vs continuous limit 3.65 A_rms; over this actuator's 12 min case constant the session's worst sustained joint torque was 4.76 N.m
   PASS  Drive current limit            7.43          11   1.47x  derived
         from the true measured peak 20.58 N.m at the joint, not a percentile: an overcurrent fault is a threshold, so the briefest spike trips it. Before despiking the log peaked at 33.99 N.m
-  PASS  Inertia ratio (fyi)           0.153     0.00185   0.01x  estimated
-        reflected/load = 0.012 (reflected 1.85 g.m^2, load 152.60 g.m^2); rotor inertia is small next to the load (good for a QDD joint)
+  ????  Inertia ratio (fyi)               0           0     inf  estimated
+        not available: sized against a measured envelope, so no declared load values are used (set motion_source to 'profile' to size against the load block instead)
   PASS  Mass budget                    0.62         0.8   1.29x  vendor
         2 x 310 g = 620 g
   PASS  Bus voltage                      52          60   1.00x  vendor

@@ -4,7 +4,7 @@ actuator_eval -- evaluate candidate vendor actuators against a robot joint.
     from actuator_eval import db, evaluate, report
 
     act   = db.load_actuator("robstride_00")
-    joint = db.load_application("elbow_example")
+    joint = db.load_application("elbow_profile_example")
     ev    = evaluate.evaluate(act, joint)
     print(report.render(ev))
 

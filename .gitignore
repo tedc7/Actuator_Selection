@@ -38,8 +38,8 @@
 # ...but the committed reference example outputs stay tracked. These names must
 # match what eval_actuator.py actually writes (<application>_<actuator>), or the
 # exemptions silently stop applying -- they did, after an earlier rename.
-!/applications/examples/elbow_example_robstride_00_report.txt
-!/applications/examples/elbow_example_robstride_00.html
+!/applications/examples/elbow_profile_example_robstride_00_report.txt
+!/applications/examples/elbow_profile_example_robstride_00.html
 !/applications/examples/elbow_envelope_example_robstride_00_report.txt
 !/applications/examples/elbow_envelope_example_robstride_00.html
 
