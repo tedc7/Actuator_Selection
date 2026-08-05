@@ -44,11 +44,15 @@
 !/applications/examples/elbow_envelope_example_robstride_00.html
 
 # Captured envelopes are the user's own operating data, like applications, so
-# they stay out of the repo -- but the bundled example is public so a fresh
-# clone can run the envelope path without a robot.
+# they stay out of the repo -- but the bundled examples are public: a measured
+# envelope so a fresh clone can run the envelope path without a robot, plus the
+# log-delivery spec and its reference log, which get handed to whoever owns the
+# controller.
 /envelopes/*
 !/envelopes/examples/
 !/envelopes/examples/*.json
+!/envelopes/examples/LOG_FORMAT.md
+!/envelopes/examples/joint_log_example.csv
 
 # Claude Code project instructions are local-only.
 CLAUDE.md

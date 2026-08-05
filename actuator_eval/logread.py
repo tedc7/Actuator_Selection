@@ -263,6 +263,18 @@ class ReadStats:
         return self.covered_time / self.span if self.span > 0 else 1.0
 
 
+def _data_lines(f: Iterable[str]) -> Iterator[str]:
+    """Drop leading blank and '#' comment lines; pass everything after through."""
+    started = False
+    for line in f:
+        if not started:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            started = True
+        yield line
+
+
 def _rows(paths: Sequence[str], cmap: ColumnMap) -> Iterator[Dict[str, float]]:
     """Yield {field: value in canonical SI} per row, streaming, never buffering."""
     scales = {k: cmap.scale(k) for k in cmap.columns}
@@ -270,9 +282,16 @@ def _rows(paths: Sequence[str], cmap: ColumnMap) -> Iterator[Dict[str, float]]:
     last_t = None
     for path in paths:
         with open(path, newline="") as f:
-            reader = csv.DictReader(f)
+            # Skip leading comment/blank lines so a logger may stamp its own
+            # provenance at the top of the file, then let DictReader treat the
+            # first real line as the header.
+            reader = csv.DictReader(_data_lines(f))
             if reader.fieldnames is None:
                 raise LogError(f"{path}: no header row")
+            # Tolerate whitespace padding around header names: "t, tau, w" is
+            # what a great many loggers emit, and failing on it would send the
+            # other team away to re-export a file that is otherwise perfect.
+            reader.fieldnames = [h.strip() for h in reader.fieldnames]
             missing = [c for c in cmap.columns.values()
                        if c not in reader.fieldnames]
             if missing:
@@ -356,6 +375,10 @@ class Pass1:
     energy_stride: int            # ACCEPTED samples per element (exact)
     stats: ReadStats
     tau_max_raw: float = 0.0      # peak before despiking, so filtering is visible
+    moving_time: float = 0.0      # time with the joint actually turning
+    regen_time: float = 0.0       # of that, time with tau*omega < 0
+    energy_motoring: float = 0.0  # integral of tau*omega where positive, J
+    energy_regen: float = 0.0     # integral of |tau*omega| where negative, J
     despike_changed: int = 0
     despike_worst: float = 0.0
     pos_hist: Dict[int, float] = field(default_factory=dict)
@@ -404,6 +427,10 @@ def read_pass1(paths: Sequence[str], cmap: ColumnMap, *,
     dts: List[float] = []
     first_t = None
     tau_max_raw = 0.0
+    moving_time = 0.0
+    regen_time = 0.0
+    energy_motoring = 0.0
+    energy_regen = 0.0
 
     for row in _rows(paths, cmap):
         if "_nan" in row:
@@ -475,6 +502,18 @@ def read_pass1(paths: Sequence[str], cmap: ColumnMap, *,
         tau_q.add(tau_d, step)
         om_q.add(om_d, step)
 
+        # The one sign relationship the evaluation consumes: motoring vs
+        # regenerating. Independent of any absolute convention, so it is the
+        # only sign fact a logger has to get right.
+        if abs(om_d) > 0.05:
+            moving_time += step
+            power = tau_d * om_d
+            if power < 0:
+                regen_time += step
+                energy_regen += -power * step
+            else:
+                energy_motoring += power * step
+
         # Decimated tau^2 series for the window search. Bucketed by a fixed
         # SAMPLE COUNT rather than by accumulating dt until it passes a
         # threshold: the accumulate-and-compare form overshoots by up to one
@@ -540,7 +579,9 @@ def read_pass1(paths: Sequence[str], cmap: ColumnMap, *,
                  boundary_raw_pts=_staircase(raw_pts),
                  energy=energy, energy_dt=e_stride * stats.dt_median,
                  energy_stride=e_stride, stats=stats,
-                 tau_max_raw=tau_max_raw,
+                 tau_max_raw=tau_max_raw, moving_time=moving_time,
+                 regen_time=regen_time, energy_motoring=energy_motoring,
+                 energy_regen=energy_regen,
                  despike_changed=changed, despike_worst=worst,
                  pos_hist=pos_hist, grav_pos=grav_pos, grav_tau=grav_tau)
 

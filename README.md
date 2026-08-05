@@ -66,7 +66,10 @@ applications/             one file per joint on your robot -- GITIGNORED
   examples/               ...except these, so a fresh clone can run the above
     _TEMPLATE.json
 envelopes/                measured operating envelopes -- GITIGNORED
-  examples/               ...except the bundled one
+  examples/               ...except these, which ship with the repo
+    LOG_FORMAT.md                   the log spec to hand to a controller team
+    joint_log_example.csv           a reference log that satisfies it
+    elbow_pick_place_example.json   a measured envelope, ready to evaluate
 eval_actuator.py          CLI
 envelope_from_log.py      turn a controller log into an envelope
 ```
@@ -185,6 +188,13 @@ computation, no envelope built on the robot. Log speed too if the controller
 already estimates it (its filtered value beats post-hoc differentiation), or a
 current column instead of torque given a declared `--kt-joint`.
 
+> **Handing this to whoever owns the controller?** Send them
+> [`envelopes/examples/LOG_FORMAT.md`](envelopes/examples/LOG_FORMAT.md) and
+> [`envelopes/examples/joint_log_example.csv`](envelopes/examples/joint_log_example.csv).
+> Together they are the complete, self-contained delivery spec — file format,
+> units, gap and sign rules, what to capture, and a checklist — with no
+> dependency on anything in this README.
+
 ```
 ./envelope_from_log.py --log elbow_2026-07-28.csv \
     --map time=t_s,position=q_rad,torque=tau_cmd_Nm \
@@ -193,9 +203,7 @@ current column instead of torque given a declared `--kt-joint`.
     --gravity-angle -90 --name elbow_july --out envelopes/elbow_july.json
 ```
 
-A 400 MB log costs the same memory as a 4 MB one: the script streams, and never
-holds the log. What comes out is tens of KB of reviewable JSON, so a recapture
-produces a diff you can read.
+A 400 MB log costs the same memory as a 4 MB one: the script streams, and never holds the log. What comes out is tens of KB of reviewable JSON, so a recapture produces a diff you can read.
 
 Point an application at it, and the envelope supersedes the profile:
 
@@ -210,6 +218,22 @@ list. Declaring several is fine: the superseded ones are kept, so deleting the
 envelope reference falls straight back. `motion_source` (or `--motion-source`)
 pins one explicitly, which is how you A/B the commanded profile against the
 measured envelope without editing anything.
+
+Envelopes live in `envelopes/`, not inside any one application, because **one
+capture can size several joints**. A quadruped's four hips are the same
+mechanism doing the same work, so a single hip capture applies to all four —
+each application points at the same envelope while keeping its own geometry,
+mounting and ambient:
+
+```json
+"envelope": "hip_trot_2026_07"
+```
+
+`--envelope NAME` overrides whatever an application names, which is how you
+check one joint against a capture taken on another, or A/B two captures of the
+same joint. The one hard rule is that a capture only describes the drivetrain it
+came off: the envelope's `ratio` is checked against the application's, and a
+mismatch is an error rather than a silent rescale.
 
 ### What is stored, and what each part may be used for
 
@@ -276,10 +300,21 @@ outlier-dominated tail worth investigating.
   isolated 40 N.m glitches and preserves a genuine 24 N.m / 8 ms event exactly,
   where a 50 ms mean flattens that event to 9 N.m. What the despiker removed is
   reported, and the unfiltered peak is kept as `max_raw`.
-- **Gravity sign check.** A flipped torque sign yields a plausible-looking
-  envelope that is confidently wrong in every downstream number. Gravity gives a
-  free independent check: at rest the holding torque must oppose it. Pass
-  `--gravity-angle` and the script refuses a capture whose sign is inverted.
+- **Torque/speed frame check.** Net mechanical energy over a session must be
+  positive for a joint doing real work — friction dissipates, and gravity
+  returns at most what it took — so a log whose torque and speed are signed in
+  opposite frames says the joint gave back more than it consumed, and is
+  refused. This needs nothing from the logger: no declared convention, no
+  gravity angle. Note the motoring/regen *time* split cannot do this job, since
+  a joint that lifts and lowers the same load sits near 50/50 either way.
+
+  The absolute sense of "positive torque" is unobservable — negating torque and
+  speed together is a change of frame that leaves every criterion identical — so
+  it belongs to the application, not the capture. Declare it there if the
+  capture's frame is the opposite of the joint's:
+  `"envelope": {"file": "...", "torque_sign": "positive_lowers"}`. That flips
+  torque alone, which is worth ~5% of thermal margin on a geared joint and
+  nothing at all on a direct drive.
 - **Coverage.** Dropouts are detected as gaps rather than read as long samples,
   and a capture missing more than 5% of its session is refused: a histogram with
   a large fraction of the time missing has a meaningless mean.
