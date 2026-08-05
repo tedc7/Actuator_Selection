@@ -49,14 +49,23 @@ def _sha256(path: str) -> str:
 
 def gravity_sign_check(p1: LR.Pass1, gravity_angle_deg=None):
     """
-    Does positive torque hold the link UP against gravity?
+    Advisory: does positive torque hold the link UP against gravity?
 
-    A flipped torque sign produces an envelope that looks entirely plausible and
-    is confidently wrong in every downstream number, so it is worth an
-    independent check -- and gravity provides one for free. At rest the holding
-    torque must oppose gravity, so tau should correlate NEGATIVELY with
-    sin(theta - theta_gravity). A positive correlation means the sign convention
-    is inverted.
+    This is a convenience for whoever OWNS THE APPLICATION, not a requirement on
+    the log. What the evaluation actually depends on is the sign of tau*omega --
+    whether the joint is motoring or regenerating, which decides whether gearbox
+    efficiency divides or multiplies the demand. Flipping torque and speed
+    together leaves every criterion identical (measured: bit-for-bit); flipping
+    torque alone moves the thermal margin by ~5% on a geared joint.
+
+    So the absolute sense of "positive torque" is a property of the APPLICATION,
+    not of the capture, and a logger should never have to know about gravity
+    angles to hand over a usable file. Run this when you happen to have position
+    and a gravity_angle to hand; it costs nothing and catches a genuinely
+    inverted convention. It does not gate the capture.
+
+    At rest the holding torque opposes gravity, so tau correlates NEGATIVELY
+    with sin(theta - theta_gravity).
 
     Returns (verdict, correlation, n) with verdict one of ok / flipped /
     inconclusive.
@@ -84,6 +93,46 @@ def gravity_sign_check(p1: LR.Pass1, gravity_angle_deg=None):
     if r > 0.3:
         return "flipped", r, n
     return "inconclusive", r, n
+
+
+def regen_fraction(p1: LR.Pass1) -> float:
+    """Fraction of moving time with tau*omega < 0, i.e. the load driving back."""
+    return p1.regen_time / max(p1.moving_time, 1e-9)
+
+
+def torque_speed_consistency(p1: LR.Pass1):
+    """
+    Are torque and speed signed in the same frame? Decided from physics alone.
+
+    Net mechanical energy over a session must be POSITIVE for a joint doing real
+    work: friction dissipates, and gravity returns at most what it took, so a
+    joint can never give back more than it consumed. If the log says otherwise,
+    torque and speed disagree about which way is positive.
+
+    This is why the log format asks for no sign convention at all. The absolute
+    sense of "positive" is unobservable -- negating torque and speed together is
+    a change of frame that leaves every criterion identical -- and the relative
+    sense, the only part that matters, is recoverable here without anyone having
+    to declare anything.
+
+    Note the regen FRACTION cannot do this job: a joint that lifts and lowers
+    the same load spends comparable time in each, so the fraction sits near 0.5
+    whichever way the sign goes (measured: 0.505 vs 0.495 on the bundled
+    example). Energy is asymmetric where time is not.
+
+    Returns (verdict, net_joules) with verdict one of ok / inverted /
+    inconclusive.
+    """
+    net = p1.energy_motoring - p1.energy_regen
+    scale = p1.energy_motoring + p1.energy_regen
+    if scale <= 0:
+        return "inconclusive", 0.0
+    # A margin, because a nearly-lossless joint legitimately sits near zero.
+    if net > 0.02 * scale:
+        return "ok", net
+    if net < -0.02 * scale:
+        return "inverted", net
+    return "inconclusive", net
 
 
 def main(argv=None):
@@ -215,26 +264,44 @@ def main(argv=None):
                   f"the log has substantial single-sample noise. That ratio is "
                   f"worth understanding before trusting the capture.")
 
+    # The sign relationship the evaluation actually consumes. Needs no gravity
+    # angle and no absolute convention -- only that torque and speed agree with
+    # each other about which way the joint is going.
+    if p1.moving_time > 0:
+        rf = regen_fraction(p1)
+        print(f"  motoring/regen split: {(1-rf)*100:.0f}% / {rf*100:.0f}% "
+              f"of moving time")
+        verdict, net = torque_speed_consistency(p1)
+        if verdict == "ok":
+            print(f"  torque/speed frames : consistent (net mechanical energy "
+                  f"{net:+.0f} J)")
+        elif verdict == "inverted":
+            print()
+            print(f"REFUSING: torque and speed are signed in OPPOSITE frames.")
+            print(f"Net mechanical energy over the session is {net:+.0f} J, "
+                  f"i.e. the log says the")
+            print(f"joint returned more energy than it consumed. Friction "
+                  f"dissipates and gravity")
+            print(f"returns at most what it took, so that is not physical -- "
+                  f"one of the two signals")
+            print(f"is negated relative to the other.")
+            print(f"Re-run with --flip-torque (or --flip-speed) to correct it.")
+            return 2
+        else:
+            print(f"  torque/speed frames : inconclusive (net mechanical "
+                  f"energy {net:+.0f} J, too near zero to judge)")
+
+    # Advisory only. Which direction is "positive torque" is a property of the
+    # APPLICATION, not of the capture, so a bad answer here is a note rather
+    # than a refusal -- see --flip-torque, or set the application's frame.
     verdict, r, n = gravity_sign_check(p1, args.gravity_angle)
     if verdict == "ok":
-        print(f"  gravity sign check  : OK (r={r:+.2f} over {n:,} stationary "
-              f"samples)")
+        print(f"  gravity sign (fyi)  : positive torque lifts the link "
+              f"(r={r:+.2f} over {n:,} stationary samples)")
     elif verdict == "flipped":
-        print()
-        print(f"REFUSING: the gravity sign check says the torque sign is "
-              f"INVERTED (r={r:+.2f}).")
-        print(f"At rest the holding torque must oppose gravity, so torque "
-              f"should correlate negatively")
-        print(f"with sin(theta - gravity_angle); here it correlates positively. "
-              f"A flipped sign")
-        print(f"produces a plausible-looking envelope that is wrong in every "
-              f"downstream number.")
-        print(f"Re-run with --flip-torque if the convention really is inverted.")
-        return 2
-    else:
-        print(f"  gravity sign check  : inconclusive"
-              + ("" if args.gravity_angle is not None else
-                 " (pass --gravity-angle to enable)"))
+        print(f"  gravity sign (fyi)  : positive torque LOWERS the link "
+              f"(r={r:+.2f}). That is a valid convention; the application must "
+              f"declare it.")
 
     # ---- pass 2 ----------------------------------------------------------
     ladder = None

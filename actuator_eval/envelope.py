@@ -261,6 +261,28 @@ class Envelope:
         return P(1.0, "-", src, self.tol, note, name="envelope")
 
     # ------------------------------------------------------------------
+    def negate_torque(self) -> "Envelope":
+        """
+        Flip the torque sense, in place, across every artifact.
+
+        For an application whose frame is the opposite of the logger's. Only
+        torque is negated, never speed: the pair's RELATIVE sign is what decides
+        motoring versus regenerating, so negating both would be a no-op and
+        negating torque alone is precisely the correction wanted.
+        """
+        for c in self.cells:
+            c.tau = -c.tau
+            c.tau_mean = -c.tau_mean
+        for o in self.outliers:
+            o.tau_peak = -o.tau_peak
+            o.tau_mean = -o.tau_mean
+            o.tau_rms = -o.tau_rms
+        for w in self.windows:
+            w.segments = [(dt, -tau, om) for dt, tau, om in w.segments]
+        # boundary, extremes and the duration curve are magnitudes, so they are
+        # unaffected by construction.
+        return self
+
     def as_duty_segments(self) -> List[Tuple[float, float, float]]:
         """
         The occupancy record as a duty cycle: [(dt, tau_joint, omega_joint)].

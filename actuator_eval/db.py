@@ -42,11 +42,20 @@ APPLICATION_DIR = os.environ.get(
 # The bundled examples are public so a fresh clone can run the quick start.
 EXAMPLE_DIR = os.path.join(APPLICATION_DIR, "examples")
 
-# Envelopes are summaries of real capture sessions. They get their own directory
-# rather than living inside the application file because a joint is re-captured
-# periodically without the mechanism changing: a recapture should produce a diff
-# that touches only the envelope, and carry its own provenance (which log, which
-# robot, which day) independently of the joint's physical definition.
+# Envelopes are summaries of real capture sessions, and they get their own
+# directory for two reasons.
+#
+# They are REUSABLE ACROSS JOINTS in a way an application is not. A quadruped's
+# four hip joints are the same mechanism doing the same work, so one capture
+# legitimately sizes all four; an application file, which carries that joint's
+# own geometry and mounting, never applies to a second joint. Filing envelopes
+# under one application would bury a shared artifact inside one of its users.
+#
+# And a joint gets re-captured periodically without the mechanism changing, so
+# an envelope stays a separate FILE from any application that references it: a
+# recapture should produce a diff that touches only the envelope, and should
+# carry its own provenance (which log, which robot, which day) independently of
+# any joint's physical definition.
 ENVELOPE_DIR = os.environ.get(
     "ACTUATOR_EVAL_ENVELOPES_DIR", os.path.join(_REPO, "envelopes"))
 EXAMPLE_ENVELOPE_DIR = os.path.join(ENVELOPE_DIR, "examples")
@@ -478,6 +487,27 @@ def joint_from_dict(d: Dict) -> Tuple[Joint, U.UnitAudit]:
         if isinstance(spec, dict) and spec.get("note"):
             env.note = env.note or spec["note"]
 
+        # Which direction of logged torque means "lifts the link" is a fact
+        # about THIS joint's frame, not about the capture, so the application
+        # declares it and the logger never has to.
+        #
+        # Only the RELATIVE sign of torque and speed reaches a verdict: it
+        # decides motoring vs regenerating, and hence whether gearbox
+        # efficiency divides or multiplies the demand. Negating both together
+        # leaves every criterion bit-for-bit identical, so this flips torque
+        # alone -- the case that genuinely matters (worth ~5% of thermal margin
+        # on a geared joint).
+        if isinstance(spec, dict) and spec.get("torque_sign") is not None:
+            sign = spec["torque_sign"]
+            if sign not in (1, -1, "positive_lifts", "positive_lowers"):
+                raise ValueError(
+                    f"envelope torque_sign must be 1 / -1 / 'positive_lifts' / "
+                    f"'positive_lowers', got {sign!r}.")
+            if sign in (-1, "positive_lowers"):
+                env.negate_torque()
+                audit.record("envelope.torque_sign", -1.0, "-",
+                             "positive logged torque LOWERS the link", True)
+
         # The envelope is joint-referred, so it is only valid for the drivetrain
         # it was captured on. A ratio mismatch means the capture came off a
         # different machine than this application describes, and every torque in
@@ -690,6 +720,27 @@ def load_envelope(name_or_path: str, with_audit: bool = False):
     return (env, audit) if with_audit else env
 
 
+def _is_envelope_file(path: str) -> bool:
+    """
+    True if this json is an envelope rather than an application.
+
+    The two live in separate directories, so this is not how they are normally
+    told apart -- it is a guard against a misfiled one. Dropping an envelope
+    into applications/ would otherwise offer it to `-j`, where it parses as a
+    joint with no motion and fails with something unhelpful; here it simply
+    does not appear in the list.
+
+    Only the head of the file is read: an envelope is tens of KB of cells, and
+    parsing every candidate just to list names would be wasteful.
+    """
+    try:
+        with open(path) as f:
+            head = f.read(400)
+    except OSError:
+        return False
+    return '"schema"' in head and "actuator_eval.envelope" in head
+
+
 def list_envelopes() -> List[Tuple[str, str]]:
     """[(name, kind)] for every envelope found, kind 'private' or 'example'."""
     out: List[Tuple[str, str]] = []
@@ -701,7 +752,7 @@ def list_envelopes() -> List[Tuple[str, str]]:
             if not f.endswith(".json") or f.startswith("_"):
                 continue
             name = f[:-5]
-            if name in seen:
+            if name in seen or not _is_envelope_file(os.path.join(d, f)):
                 continue
             seen.add(name)
             out.append((name, kind))
@@ -763,7 +814,9 @@ def list_applications() -> List[Tuple[str, str]]:
             if not f.endswith(".json") or f.startswith("_"):
                 continue
             name = f[:-5]
-            if name in seen:
+            # Envelopes live in the same directory and must not appear here as
+            # something you could pass to -j.
+            if name in seen or _is_envelope_file(os.path.join(d, f)):
                 continue
             seen.add(name)
             out.append((name, kind))

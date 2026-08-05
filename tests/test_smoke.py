@@ -1567,6 +1567,246 @@ def test_envelope_html_is_self_contained():
         assert bad not in stripped, f"chart html should not contain {bad}"
 
 
+def test_reference_log_satisfies_its_own_spec():
+    """
+    The file handed to the controller team must satisfy every requirement the
+    spec beside it states -- and must need nothing the spec does not ask for.
+
+    In particular it processes with NO --gravity-angle. Which direction of
+    torque lifts the link is a property of the application's frame, not of the
+    capture, so requiring a logger to know it was a burden that bought nothing:
+    negating torque and speed together leaves every criterion identical.
+    """
+    log = os.path.join(REPO, "envelopes", "examples", "joint_log_example.csv")
+    spec = os.path.join(REPO, "envelopes", "examples", "LOG_FORMAT.md")
+    assert os.path.exists(log) and os.path.exists(spec)
+
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "ref.json")
+        proc = subprocess.run(
+            [sys.executable, "envelope_from_log.py", "--log", log,
+             "--map", "time=t_s,position=q_rad,speed=qd_rad_s,torque=tau_Nm",
+             "--units", "time=s,position=rad,speed=rad/s,torque=N.m",
+             "--torque-source", "torque_sensor",
+             "--name", "ref", "--out", out],
+            cwd=REPO, capture_output=True, text=True, timeout=600)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "coverage            : 100.00%" in proc.stdout, proc.stdout
+        # The sign fact that IS the logger's responsibility: torque and speed
+        # consistent with each other, so the joint both drives and is driven.
+        assert "motoring/regen split" in proc.stdout, proc.stdout
+        assert "**" not in proc.stdout.split("summarising")[0], \
+            "the reference log must raise no warnings: " + proc.stdout
+        env = db.load_envelope(out)
+
+    assert env.cells and env.windows
+    # The planted 8 ms hard stop must survive as itself.
+    hard = [o for o in env.outliers if abs(o.tau_peak) > 15.0]
+    assert hard, [round(o.tau_peak, 2) for o in env.outliers]
+    assert any(abs(o.duration - 0.008) < 0.004 for o in hard), \
+        [(o.duration, o.tau_peak) for o in hard]
+
+    # The header the spec quotes must be the header the file actually has.
+    with open(log) as f:
+        lines = [next(f) for _ in range(8)]
+    assert lines[0].startswith("#"), "the reference file identifies itself"
+    # First non-comment line, the way the reader finds it -- not a fixed index,
+    # which broke the moment a comment line was removed.
+    header = next(l.strip() for l in lines
+                  if l.strip() and not l.startswith("#"))
+    assert header == "t_s,q_rad,qd_rad_s,tau_Nm", header
+    assert not any("gravity" in l.lower() for l in lines), \
+        "the reference log must not mention gravity: the logger is not asked " \
+        "to know which way the joint is mounted"
+    with open(spec) as f:
+        assert header in f.read(), "the spec quotes a header the log does not have"
+
+
+def test_log_reader_accepts_the_formats_the_spec_promises():
+    """
+    Padded headers and a leading comment block are both explicitly allowed, so
+    they must actually work -- a spec that promises tolerance the reader does
+    not have sends the other team away to re-export a perfectly good file.
+    """
+    from actuator_eval import logread as LR
+
+    cmap = LR.ColumnMap(columns={"time": "t", "torque": "tau", "speed": "w"},
+                        units={"time": "s", "torque": "N.m", "speed": "rad/s"})
+    body = "0.000,1.0,0.5\n0.001,1.1,0.5\n0.002,1.2,0.5\n"
+    cases = {
+        "plain": "t,tau,w\n" + body,
+        "crlf": ("t,tau,w\n" + body).replace("\n", "\r\n"),
+        "no final newline": ("t,tau,w\n" + body).rstrip("\n"),
+        "padded header": "t, tau, w\n" + body,
+        "comment block": "# logger v2\n# robot=arm-004\n\nt,tau,w\n" + body,
+        "extra columns": "t,tau,w,note\n" + "".join(
+            l.rstrip("\n") + ",x\n" for l in body.splitlines(True)),
+        "scientific": "t,tau,w\n0e0,1.0,5e-1\n1e-3,1.1,0.5\n2e-3,1.2,0.5\n",
+        "empty cell dropped": "t,tau,w\n0.000,1.0,0.5\n0.001,,0.5\n0.002,1.2,0.5\n",
+    }
+    with tempfile.TemporaryDirectory() as d:
+        for label, text in cases.items():
+            path = os.path.join(d, "l.csv")
+            with open(path, "w", newline="") as f:
+                f.write(text)
+            p1 = LR.read_pass1([path], cmap, despike=0)
+            expect = 2 if label == "empty cell dropped" else 3
+            assert p1.stats.rows == expect, (label, p1.stats.rows)
+
+        # ...and a delimiter the spec rules out must fail loudly, not silently.
+        path = os.path.join(d, "semi.csv")
+        with open(path, "w", newline="") as f:
+            f.write("t;tau;w\n0.0;1.0;0.5\n")
+        try:
+            LR.read_pass1([path], cmap, despike=0)
+            assert False, "a semicolon-delimited file must be rejected"
+        except LR.LogError:
+            pass
+
+
+def _flip_envelope(env, torque=False, speed=False):
+    for c in env.cells:
+        if torque:
+            c.tau, c.tau_mean = -c.tau, -c.tau_mean
+        if speed:
+            c.omega = -c.omega
+    for o in env.outliers:
+        if torque:
+            o.tau_peak, o.tau_mean, o.tau_rms = -o.tau_peak, -o.tau_mean, -o.tau_rms
+        if speed:
+            o.omega_at_peak = -o.omega_at_peak
+    for w in env.windows:
+        w.segments = [(dt, -t if torque else t, -om if speed else om)
+                      for dt, t, om in w.segments]
+    return env
+
+
+def test_only_the_relative_sign_of_torque_and_speed_matters():
+    """
+    Why the log spec asks for internal consistency and nothing about gravity.
+
+    Negating torque AND speed together is a change of frame and must leave every
+    criterion bit-for-bit identical. Negating torque alone swaps motoring for
+    regenerating, which decides whether gearbox efficiency divides or multiplies
+    the demand -- so it genuinely moves the verdict, and is the one sign fact a
+    logger has to get right.
+
+    Uses a geared joint deliberately: at ratio_eff = 1.0 the branch is a no-op
+    and this would pass vacuously.
+    """
+    act = db.load_actuator("robstride_00")
+
+    def run(**flips):
+        jt = db.load_application("elbow_envelope_example")
+        jt.ratio_type, jt.ratio_eff = "harmonic", None
+        _flip_envelope(jt.envelope, **flips)
+        ev = evaluate.evaluate(act, jt)
+        return ev.thermal.mean_loss_W
+
+    base = run()
+    both = run(torque=True, speed=True)
+    tau_only = run(torque=True)
+
+    assert abs(both - base) < 1e-12, \
+        f"negating both is a frame change and must be a no-op: {base} vs {both}"
+    assert abs(tau_only - base) / base > 0.01, \
+        (f"negating torque alone should swap motoring/regen and move the loss; "
+         f"{base} vs {tau_only}. If this fails the efficiency branch is dead.")
+
+
+def test_application_declares_the_envelope_torque_sign():
+    """
+    The burden lives with the application, which knows its own frame, not with
+    the logger, which cannot know how the joint is mounted.
+    """
+    import json as _json
+
+    with open(db.resolve_application_path("elbow_envelope_example")) as f:
+        app = _json.load(f)
+    app["ratio_type"] = "harmonic"          # so efficiency != 1 and sign bites
+    act = db.load_actuator("robstride_00")
+
+    def loss(sign):
+        spec = dict(app)
+        if sign is not None:
+            spec["envelope"] = {"file": "elbow_pick_place_example",
+                                "torque_sign": sign}
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.json")
+            with open(p, "w") as f:
+                _json.dump(spec, f)
+            return evaluate.evaluate(act, db.load_application(p)).thermal.mean_loss_W
+
+    assert abs(loss(None) - loss("positive_lifts")) < 1e-12, \
+        "positive_lifts is the default and must change nothing"
+    assert abs(loss(1) - loss("positive_lifts")) < 1e-12
+    assert abs(loss(-1) - loss("positive_lowers")) < 1e-12
+    assert abs(loss("positive_lowers") - loss("positive_lifts")) > 1e-6, \
+        "declaring the opposite convention must actually flip the torque sense"
+
+    spec = dict(app)
+    spec["envelope"] = {"file": "elbow_pick_place_example", "torque_sign": "up"}
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "a.json")
+        with open(p, "w") as f:
+            _json.dump(spec, f)
+        try:
+            db.load_application(p)
+            assert False, "an unknown torque_sign must raise"
+        except ValueError as e:
+            assert "torque_sign" in str(e)
+
+
+def test_torque_speed_frames_are_checked_from_physics_alone():
+    """
+    The check that replaced the gravity gate, so the log spec can require no
+    sign convention at all.
+
+    Net mechanical energy must be positive for a joint doing real work --
+    friction dissipates and gravity returns at most what it took -- so a
+    negated signal shows up as the joint returning more than it consumed. No
+    declared frame, no gravity angle, no cooperation from the logger.
+
+    The regen FRACTION cannot do this: a joint that lifts and lowers the same
+    load spends comparable time in each, so it sits near 0.5 either way.
+    """
+    from actuator_eval import logread as LR
+    from envelope_from_log import regen_fraction, torque_speed_consistency
+
+    cmap = LR.ColumnMap(
+        columns={"time": "t_s", "speed": "qd_rad_s", "torque": "tau_Nm"},
+        units={"time": "s", "speed": "rad/s", "torque": "N.m"})
+    log = os.path.join(REPO, "envelopes", "examples", "joint_log_example.csv")
+
+    good = LR.read_pass1([log], cmap, despike=5)
+    assert good.moving_time > 0
+    assert torque_speed_consistency(good)[0] == "ok"
+
+    bad = LR.read_pass1([log], cmap, despike=5, flip_torque=True)
+    verdict, net = torque_speed_consistency(bad)
+    assert verdict == "inverted", (verdict, net)
+
+    # ...and the fraction really is blind to it, which is why energy is used.
+    assert abs(regen_fraction(good) - regen_fraction(bad)) < 0.05, \
+        "if the fraction became discriminating, revisit which test is primary"
+
+
+def test_reference_log_needs_no_gravity_knowledge():
+    """
+    The whole point of the change: the delivery spec must not ask a logger to
+    know how the joint is mounted, and must not mention gravity at all.
+    """
+    spec = os.path.join(REPO, "envelopes", "examples", "LOG_FORMAT.md")
+    with open(spec) as f:
+        text = f.read()
+
+    body = text.split("## 7.")[1].split("## 8.")[0]
+    assert "gravity" not in body.lower(), body
+    for banned in ("gravity_angle", "sin(theta", "centre of gravity",
+                   "raises the link", "against gravity"):
+        assert banned not in text, f"the log spec still mentions {banned!r}"
+
+
 def test_envelope_from_log_refuses_a_flipped_torque_sign():
     """
     Gravity is a free independent check on the sign convention, and a flipped
